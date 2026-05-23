@@ -43,6 +43,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -52,6 +53,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.data.database.AlertHistory
 import com.example.data.database.StockAlert
+import com.example.data.database.IaAnalysisHistory
 import com.example.data.repository.StockRepository
 import com.example.ui.StockAgentViewModel
 import com.example.ui.theme.*
@@ -107,6 +109,7 @@ fun StockAgentMainScreen(
     val selectedTab by viewModel.selectedTab.collectAsStateWithLifecycle()
     val allAlerts by viewModel.allAlerts.collectAsStateWithLifecycle()
     val allHistory by viewModel.allHistory.collectAsStateWithLifecycle()
+    val allIaHistory by viewModel.allIaHistory.collectAsStateWithLifecycle()
     val activeNotification by viewModel.activeNotification.collectAsStateWithLifecycle()
 
     if (activeNotification != null) {
@@ -207,12 +210,9 @@ fun StockAgentMainScreen(
     ) {
         // App Header
         AppHeader(onRunAgentClick = {
-            val wasChecking = viewModel.isCheckingAlerts.value
-            viewModel.runMonitoringAgent()
-            if (wasChecking) {
-                Toast.makeText(context, "Vigilancia de bolsa detenida.", Toast.LENGTH_SHORT).show()
-            } else {
-                Toast.makeText(context, "Iniciando agente autónomo de bolsa...", Toast.LENGTH_SHORT).show()
+            if (!viewModel.isCheckingAlerts.value) {
+                viewModel.runMonitoringAgent()
+                Toast.makeText(context, "Iniciando agente autónomo de bolsa y actualizando cotizaciones...", Toast.LENGTH_SHORT).show()
             }
         }, viewModel = viewModel)
 
@@ -233,7 +233,7 @@ fun StockAgentMainScreen(
             when (selectedTab) {
                 0 -> DashboardScreen(viewModel = viewModel, activeAlerts = allAlerts)
                 1 -> SetupAlertScreen(viewModel = viewModel)
-                2 -> HistoryScreen(viewModel = viewModel, historyLogs = allHistory)
+                2 -> HistoryScreen(viewModel = viewModel, historyLogs = allHistory, iaLogs = allIaHistory)
                 3 -> TechnicalAssistantScreen(viewModel = viewModel)
             }
         }
@@ -281,10 +281,10 @@ fun AppHeader(onRunAgentClick: () -> Unit, viewModel: StockAgentViewModel) {
             // High-fidelity active monitoring button
             Button(
                 onClick = onRunAgentClick,
-                enabled = true,
+                enabled = !isChecking,
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isChecking) CoralRed else EmeraldGreen,
-                    contentColor = if (isChecking) Color.White else MidnightNavy
+                    containerColor = if (isChecking) EmeraldGreen.copy(alpha = 0.5f) else EmeraldGreen,
+                    contentColor = MidnightNavy
                 ),
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                 modifier = Modifier
@@ -292,17 +292,31 @@ fun AppHeader(onRunAgentClick: () -> Unit, viewModel: StockAgentViewModel) {
                     .testTag("run_agent_button"),
                 shape = RoundedCornerShape(8.dp)
             ) {
-                Icon(
-                    imageVector = if (isChecking) Icons.Default.Cancel else Icons.Default.PlayArrow,
-                    contentDescription = "Run Surveillance",
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(modifier = Modifier.width(4.dp))
-                Text(
-                    text = if (isChecking) "Detener" else "Vigilar Bolsa",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold
-                )
+                if (isChecking) {
+                    CircularProgressIndicator(
+                        color = MidnightNavy,
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Vigilando...",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.PlayArrow,
+                        contentDescription = "Run Surveillance",
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = "Vigilar Bolsa",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
             }
         }
 
@@ -592,13 +606,20 @@ fun DashboardScreen(viewModel: StockAgentViewModel, activeAlerts: List<StockAler
                                 Text(text = formatVolume(quote.volume), fontSize = 12.sp, fontWeight = FontWeight.Bold, color = LightText)
                             }
                             Column(horizontalAlignment = Alignment.End) {
-                                val isBullish = if (quote.pricesHistory.size >= 2) quote.price > quote.pricesHistory.first() else false
+                                val isBullish = if (quote.pricesHistory.size >= 2) {
+                                    quote.price >= quote.pricesHistory.first()
+                                } else {
+                                    quote.changePercent >= 0.0
+                                }
                                 Text(text = "Tendencia (5d)", fontSize = 10.sp, color = GrayText)
                                 Text(
                                     text = if (isBullish) "📈 Alcista" else "📉 Bajista",
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold,
-                                    color = if (isBullish) EmeraldGreen else CoralRed
+                                    color = if (isBullish) EmeraldGreen else CoralRed,
+                                    modifier = Modifier.clickable {
+                                        viewModel.prefillConfigureScreen(quote.ticker, quote.ticker, if (isBullish) "ALCISTA" else "BAJISTA")
+                                    }
                                 )
                             }
                         }
@@ -700,15 +721,13 @@ fun DashboardScreen(viewModel: StockAgentViewModel, activeAlerts: List<StockAler
 
                         val isPreset = presetsList.any { it.first.uppercase() == quote.ticker.uppercase() }
 
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            OutlinedButton(
-                                onClick = {
-                                    if (isPreset) {
-                                        viewModel.removePreset(quote.ticker)
-                                    } else {
+                        if (!isPreset) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                OutlinedButton(
+                                    onClick = {
                                         viewModel.addPreset(quote.ticker, when (quote.ticker) {
                                             "^IBEX" -> "IBEX 35"
                                             "SAN.MC" -> "Santander"
@@ -717,33 +736,71 @@ fun DashboardScreen(viewModel: StockAgentViewModel, activeAlerts: List<StockAler
                                             "AAPL" -> "Apple"
                                             else -> quote.ticker
                                         })
-                                    }
-                                },
-                                border = BorderStroke(1.dp, if (isPreset) CoralRed else EmeraldGreen),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(44.dp),
-                                shape = RoundedCornerShape(8.dp),
-                                colors = ButtonDefaults.outlinedButtonColors(
-                                    contentColor = if (isPreset) CoralRed else EmeraldGreen
-                                )
-                            ) {
-                                Icon(
-                                    imageVector = if (isPreset) Icons.Default.Star else Icons.Default.StarBorder,
-                                    contentDescription = "Presets",
-                                    modifier = Modifier.size(16.dp),
-                                    tint = if (isPreset) CoralRed else EmeraldGreen
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = if (isPreset) "Quitar Preset" else "Añadir Preset",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 11.5.sp
-                                )
+                                    },
+                                    border = BorderStroke(1.dp, EmeraldGreen),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(44.dp),
+                                    shape = RoundedCornerShape(8.dp),
+                                    colors = ButtonDefaults.outlinedButtonColors(
+                                        contentColor = EmeraldGreen
+                                    )
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.StarBorder,
+                                        contentDescription = "Presets",
+                                        modifier = Modifier.size(16.dp),
+                                        tint = EmeraldGreen
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = "Añadir Preset",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 11.5.sp
+                                    )
+                                }
                             }
                         }
                     }
                 }
+            }
+        }
+
+        // Tus Acciones Favoritas section
+        item {
+            Text(
+                text = "Tus Acciones Favoritas (${presetsList.size})",
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold,
+                color = LightText,
+                modifier = Modifier.padding(top = 8.dp)
+            )
+        }
+
+        if (presetsList.isEmpty()) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = CardSlate),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, BorderBlue)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = "No tienes acciones favoritas todavía. Busca un ticker y añádelo como Preset en la lupa superior.",
+                            fontSize = 12.sp,
+                            color = GrayText,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+            }
+        } else {
+            items(presetsList) { preset ->
+                PresetWatchlistItem(preset = preset, viewModel = viewModel)
             }
         }
 
@@ -889,6 +946,22 @@ fun AlertRuleCard(alert: StockAlert, onToggleActive: () -> Unit, onDelete: () ->
                         tint = if (isBullish) EmeraldGreen else CoralRed
                     )
                 }
+                alert.unusualVolumeMultiplier?.let {
+                    LimitChip(
+                        label = "Vol Inusual",
+                        value = "${it}x Media",
+                        icon = Icons.Default.TrendingUp,
+                        tint = AmberGold
+                    )
+                }
+                if (alert.condLogicalOperator != "NONE" && alert.condLogicalOperator != null) {
+                    LimitChip(
+                        label = "Lógica",
+                        value = alert.condLogicalOperator,
+                        icon = Icons.Default.Settings,
+                        tint = ElectricBlue
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(12.dp))
@@ -896,6 +969,110 @@ fun AlertRuleCard(alert: StockAlert, onToggleActive: () -> Unit, onDelete: () ->
                 Icon(imageVector = Icons.Default.NotificationsActive, contentDescription = "Push active", tint = EmeraldGreen, modifier = Modifier.size(14.dp))
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(text = "Notificaciones Móviles Activas", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = EmeraldGreen)
+            }
+        }
+    }
+}
+
+@Composable
+fun PresetWatchlistItem(
+    preset: Pair<String, String>,
+    viewModel: StockAgentViewModel
+) {
+    var quoteState by remember { mutableStateOf<com.example.data.repository.StockRepository.QuoteDataPoint?>(null) }
+    val refreshTrigger by viewModel.refreshTrigger.collectAsStateWithLifecycle()
+
+    LaunchedEffect(preset.first, refreshTrigger) {
+        try {
+            val q = viewModel.repository.getQuote(preset.first)
+            quoteState = q
+        } catch (e: Exception) {
+            // keep empty or simulated fallback
+        }
+    }
+
+    val isPositive = if (quoteState != null) quoteState!!.changePercent >= 0 else true
+    val isBullish = if (quoteState != null) {
+        if (quoteState!!.pricesHistory.size >= 2) {
+            quoteState!!.price >= quoteState!!.pricesHistory.first()
+        } else {
+            quoteState!!.changePercent >= 0.0
+        }
+    } else false
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable {
+                viewModel.updateSearchQuery(preset.first)
+                viewModel.performSearch()
+            },
+        colors = CardDefaults.cardColors(containerColor = MidnightNavy),
+        shape = RoundedCornerShape(10.dp),
+        border = BorderStroke(1.dp, BorderBlue.copy(alpha = 0.6f))
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = preset.first,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = LightText
+                )
+                Text(
+                    text = preset.second,
+                    fontSize = 11.sp,
+                    color = GrayText,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            if (quoteState == null) {
+                CircularProgressIndicator(color = ElectricBlue, modifier = Modifier.size(16.dp))
+            } else {
+                val q = quoteState!!
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(
+                        text = if (q.ticker == "^IBEX") {
+                            String.format(Locale.ROOT, "%,.1f pto", q.price)
+                        } else {
+                            String.format(Locale.ROOT, "%.2f €/$$", q.price)
+                        },
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isPositive) EmeraldGreen else CoralRed
+                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = String.format(Locale.ROOT, "%.2f%%", q.changePercent),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (isPositive) EmeraldGreen else CoralRed
+                        )
+                        Text(
+                            text = if (isBullish) "📈 ALCISTA" else "📉 BAJISTA",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isBullish) EmeraldGreen else CoralRed,
+                            modifier = Modifier
+                                .background((if (isBullish) EmeraldGreen else CoralRed).copy(alpha = 0.12f), RoundedCornerShape(4.dp))
+                                .clickable {
+                                    viewModel.prefillConfigureScreen(preset.first, preset.second, if (isBullish) "ALCISTA" else "BAJISTA")
+                                }
+                                .padding(horizontal = 4.dp, vertical = 2.dp)
+                        )
+                    }
+                }
             }
         }
     }
@@ -972,15 +1149,24 @@ fun FlowRow(
 fun SetupAlertScreen(viewModel: StockAgentViewModel) {
     val prefillTicker by viewModel.configTickerPrefill.collectAsStateWithLifecycle()
     val prefillName by viewModel.configNamePrefill.collectAsStateWithLifecycle()
+    val prefillTrend by viewModel.configTrendPrefill.collectAsStateWithLifecycle()
     val presets by viewModel.presets.collectAsStateWithLifecycle()
 
     var ticker by remember { mutableStateOf("SAN.MC") }
     var name by remember { mutableStateOf("Banco Santander") }
 
-    LaunchedEffect(prefillTicker, prefillName) {
+    val trends = listOf("Ninguna", "ALCISTA", "BAJISTA")
+    var selectedTrendIndex by remember { mutableStateOf(0) }
+
+    LaunchedEffect(prefillTicker, prefillName, prefillTrend) {
         if (prefillTicker.isNotEmpty()) {
             ticker = prefillTicker
             name = prefillName
+            selectedTrendIndex = when (prefillTrend) {
+                "ALCISTA", "BULLISH" -> 1
+                "BAJISTA", "BEARISH" -> 2
+                else -> 0
+            }
             viewModel.clearConfigurePrefill()
         }
     }
@@ -993,8 +1179,7 @@ fun SetupAlertScreen(viewModel: StockAgentViewModel) {
     var takeProfit by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("robertoruizmena@gmail.com") }
 
-    val trends = listOf("Ninguna", "ALCISTA", "BAJISTA")
-    var selectedTrendIndex by remember { mutableStateOf(0) }
+    var unusualVolumeMultiplier by remember { mutableStateOf("") }
 
     val scrollState = rememberScrollState()
 
@@ -1262,7 +1447,27 @@ fun SetupAlertScreen(viewModel: StockAgentViewModel) {
                     }
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Unusual Volume Multiplier OutlinedTextField
+                OutlinedTextField(
+                    value = unusualVolumeMultiplier,
+                    onValueChange = { unusualVolumeMultiplier = it },
+                    label = { Text("Multiplicador de Volumen Inusual (ej: 2.5)", fontSize = 12.sp) },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    placeholder = { Text("ej. 2.0 = Activa si volumen >= 2x la media", fontSize = 11.sp, color = GrayText) },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = ElectricBlue,
+                        unfocusedBorderColor = BorderBlue,
+                        focusedLabelColor = ElectricBlue,
+                        focusedTextColor = LightText,
+                        unfocusedTextColor = LightText
+                    )
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
 
                 // Info Card about Mobile Push alerts
                 Card(
@@ -1309,6 +1514,8 @@ fun SetupAlertScreen(viewModel: StockAgentViewModel) {
                         val pctC = pctChange.toDoubleOrNull()
                         val sl = stopLoss.toDoubleOrNull()
                         val tp = takeProfit.toDoubleOrNull()
+                        val volMult = unusualVolumeMultiplier.toDoubleOrNull()
+                        val condOperator = "NONE"
 
                         if (ticker.isBlank()) {
                             return@Button
@@ -1324,7 +1531,9 @@ fun SetupAlertScreen(viewModel: StockAgentViewModel) {
                             sl = sl,
                             tp = tp,
                             trend = trends[selectedTrendIndex],
-                            email = "Dispositivo Móvil"
+                            email = "Dispositivo Móvil",
+                            condOperator = condOperator,
+                            volMult = volMult
                         )
 
                         // Clear fields and switch to tab 0
@@ -1334,6 +1543,7 @@ fun SetupAlertScreen(viewModel: StockAgentViewModel) {
                         pctChange = ""
                         stopLoss = ""
                         takeProfit = ""
+                        unusualVolumeMultiplier = ""
                         viewModel.setSelectedTab(0)
                     },
                     modifier = Modifier
@@ -1353,8 +1563,14 @@ fun SetupAlertScreen(viewModel: StockAgentViewModel) {
 }
 
 @Composable
-fun HistoryScreen(viewModel: StockAgentViewModel, historyLogs: List<AlertHistory>) {
+fun HistoryScreen(
+    viewModel: StockAgentViewModel,
+    historyLogs: List<AlertHistory>,
+    iaLogs: List<IaAnalysisHistory>
+) {
     val context = LocalContext.current
+    var subTab by remember { mutableStateOf(0) } // 0 = Alertas, 1 = Informes IA
+    var selectedAlertReport by remember { mutableStateOf<AlertHistory?>(null) }
 
     Column(
         modifier = Modifier
@@ -1374,15 +1590,22 @@ fun HistoryScreen(viewModel: StockAgentViewModel, historyLogs: List<AlertHistory
                     color = LightText
                 )
                 Text(
-                    text = "Alertas transaccionadas y confirmadas por el Agente.",
+                    text = "Alertas disparadas y consultas realizadas.",
                     fontSize = 11.sp,
                     color = GrayText
                 )
             }
 
-            if (historyLogs.isNotEmpty()) {
+            val hasLogs = if (subTab == 0) historyLogs.isNotEmpty() else iaLogs.isNotEmpty()
+            if (hasLogs) {
                 TextButton(
-                    onClick = { viewModel.clearLog() },
+                    onClick = {
+                        if (subTab == 0) {
+                            viewModel.clearLog()
+                        } else {
+                            viewModel.clearIaAnalysisHistory()
+                        }
+                    },
                     modifier = Modifier
                         .height(36.dp)
                         .testTag("clear_logs_button")
@@ -1396,175 +1619,490 @@ fun HistoryScreen(viewModel: StockAgentViewModel, historyLogs: List<AlertHistory
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        if (historyLogs.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        // Custom segmented outline control for subTab toggle
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(MidnightNavy, RoundedCornerShape(8.dp))
+                .border(1.dp, BorderBlue, RoundedCornerShape(8.dp))
+                .padding(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            val subTabs = listOf(
+                "Alertas Técnicas (${historyLogs.size})" to Icons.Default.NotificationsActive,
+                "Consultas de IA (${iaLogs.size})" to Icons.Default.Psychology
+            )
+            subTabs.forEachIndexed { idx, pair ->
+                val isSelected = subTab == idx
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .background(
+                            if (isSelected) ElectricBlue else Color.Transparent,
+                            RoundedCornerShape(6.dp)
+                        )
+                        .clickable { subTab = idx }
+                        .padding(vertical = 8.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Icon(
-                        imageVector = Icons.Default.DoneAll,
-                        contentDescription = "All monitored ok",
-                        tint = EmeraldGreen,
-                        modifier = Modifier.size(56.dp)
+                        imageVector = pair.second,
+                        contentDescription = pair.first,
+                        tint = if (isSelected) MidnightNavy else GrayText,
+                        modifier = Modifier.size(14.dp)
                     )
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "Sin incidencias disparadas",
-                        color = LightText,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "El agente está vigilando la bolsa. Aquí aparecerán los reportes cuando los activos superen tus umbrales o condiciones.",
-                        color = GrayText,
+                        text = pair.first,
                         fontSize = 11.sp,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.padding(horizontal = 24.dp)
+                        fontWeight = FontWeight.Bold,
+                        color = if (isSelected) MidnightNavy else GrayText
                     )
                 }
             }
-        } else {
-            LazyColumn(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-                contentPadding = PaddingValues(bottom = 16.dp)
-            ) {
-                items(historyLogs) { h ->
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(containerColor = CardSlate),
-                        border = BorderStroke(1.dp, when (h.alertType) {
-                            "STOP_LOSS", "MIN_PRICE" -> CoralRed.copy(alpha = 0.5f)
-                            "TAKE_PROFIT", "MAX_PRICE" -> EmeraldGreen.copy(alpha = 0.5f)
-                            else -> BorderBlue
-                        }),
-                        shape = RoundedCornerShape(10.dp)
-                    ) {
-                        Column(modifier = Modifier.padding(16.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(
-                                        imageVector = when (h.alertType) {
-                                            "MIN_PRICE", "STOP_LOSS" -> Icons.Default.Warning
-                                            "MAX_PRICE", "TAKE_PROFIT" -> Icons.Default.MonetizationOn
-                                            "TREND" -> Icons.Default.TrendingUp
-                                            else -> Icons.Default.Info
-                                        },
-                                        contentDescription = null,
-                                        tint = when (h.alertType) {
-                                            "STOP_LOSS", "MIN_PRICE" -> CoralRed
-                                            "TAKE_PROFIT", "MAX_PRICE" -> EmeraldGreen
-                                            "TREND" -> ElectricBlue
-                                            else -> AmberGold
-                                        },
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        if (subTab == 0) {
+            if (historyLogs.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(
+                            imageVector = Icons.Default.DoneAll,
+                            contentDescription = "All monitored ok",
+                            tint = EmeraldGreen,
+                            modifier = Modifier.size(56.dp)
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = "Sin incidencias disparadas",
+                            color = LightText,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "El agente está vigilando la bolsa. Aquí aparecerán los reportes cuando los activos superen tus umbrales o condiciones.",
+                            color = GrayText,
+                            fontSize = 11.sp,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(horizontal = 24.dp)
+                        )
+                    }
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    contentPadding = PaddingValues(bottom = 16.dp)
+                ) {
+                    items(historyLogs) { h ->
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = CardSlate),
+                            border = BorderStroke(1.dp, when (h.alertType) {
+                                "STOP_LOSS", "MIN_PRICE" -> CoralRed.copy(alpha = 0.5f)
+                                "TAKE_PROFIT", "MAX_PRICE" -> EmeraldGreen.copy(alpha = 0.5f)
+                                else -> BorderBlue
+                            }),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            imageVector = when (h.alertType) {
+                                                "MIN_PRICE", "STOP_LOSS" -> Icons.Default.Warning
+                                                "MAX_PRICE", "TAKE_PROFIT" -> Icons.Default.MonetizationOn
+                                                "TREND" -> Icons.Default.TrendingUp
+                                                else -> Icons.Default.Info
+                                            },
+                                            contentDescription = null,
+                                            tint = when (h.alertType) {
+                                                "STOP_LOSS", "MIN_PRICE" -> CoralRed
+                                                "TAKE_PROFIT", "MAX_PRICE" -> EmeraldGreen
+                                                "TREND" -> ElectricBlue
+                                                else -> AmberGold
+                                            },
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = h.ticker,
+                                            fontSize = 16.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = LightText
+                                        )
+                                    }
+
                                     Text(
-                                        text = h.ticker,
-                                        fontSize = 16.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = LightText
+                                        text = SimpleDateFormat("HH:mm - dd/MM", Locale.getDefault()).format(Date(h.timestamp)),
+                                        fontSize = 11.sp,
+                                        color = GrayText
                                     )
                                 }
+
+                                Spacer(modifier = Modifier.height(8.dp))
 
                                 Text(
-                                    text = SimpleDateFormat("HH:mm - dd/MM", Locale.getDefault()).format(Date(h.timestamp)),
-                                    fontSize = 11.sp,
-                                    color = GrayText
+                                    text = h.message,
+                                    fontSize = 13.sp,
+                                    color = LightText,
+                                    lineHeight = 18.sp
                                 )
-                            }
 
-                            Spacer(modifier = Modifier.height(8.dp))
+                                Spacer(modifier = Modifier.height(12.dp))
 
-                            Text(
-                                text = h.message,
-                                fontSize = 13.sp,
-                                color = LightText,
-                                lineHeight = 18.sp
-                            )
-
-                            Spacer(modifier = Modifier.height(12.dp))
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                // Simulate living push notifier
-                                Button(
-                                    onClick = {
-                                        viewModel.sendPushNotification(h.ticker, h.message)
-                                        Toast.makeText(context, "Se ha disparado la notificación en la barra de estado.", Toast.LENGTH_SHORT).show()
-                                    },
-                                    colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue),
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .height(44.dp)
-                                        .testTag("simulate_push_button_${h.id}"),
-                                    contentPadding = PaddingValues(horizontal = 8.dp),
-                                    shape = RoundedCornerShape(6.dp)
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    Icon(
-                                        imageVector = Icons.Default.NotificationsActive,
-                                        contentDescription = "Simular Notificación",
-                                        tint = MidnightNavy,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text(
-                                        text = "Probar Push",
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MidnightNavy
-                                    )
-                                }
+                                    Button(
+                                        onClick = {
+                                            selectedAlertReport = h
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .height(44.dp)
+                                            .testTag("read_report_button_${h.id}"),
+                                        contentPadding = PaddingValues(horizontal = 8.dp),
+                                        shape = RoundedCornerShape(6.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Article,
+                                            contentDescription = "Leer Informe",
+                                            tint = MidnightNavy,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(
+                                            text = "Leer",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MidnightNavy
+                                        )
+                                    }
 
-                                // Share analytical documentation
-                                OutlinedButton(
-                                    onClick = {
-                                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                                            type = "text/plain"
-                                            putExtra(Intent.EXTRA_SUBJECT, "Reporte Móvil Bolsa: ${h.ticker}")
-                                            putExtra(Intent.EXTRA_TEXT, h.emailContent)
-                                        }
-                                        context.startActivity(Intent.createChooser(shareIntent, "Compartir Reporte Bolsa..."))
-                                    },
-                                    border = BorderStroke(1.dp, BorderBlue),
-                                    modifier = Modifier
-                                        .weight(1.2f)
-                                        .height(44.dp)
-                                        .testTag("share_report_button_${h.id}"),
-                                    contentPadding = PaddingValues(horizontal = 8.dp),
-                                    shape = RoundedCornerShape(6.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Share,
-                                        contentDescription = "Compartir Reporte",
-                                        tint = ElectricBlue,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text(
-                                        text = "Compartir Reporte",
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = ElectricBlue
-                                    )
+                                    OutlinedButton(
+                                        onClick = {
+                                            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                                type = "text/plain"
+                                                putExtra(Intent.EXTRA_SUBJECT, "Reporte Móvil Bolsa: ${h.ticker}")
+                                                putExtra(Intent.EXTRA_TEXT, h.emailContent)
+                                            }
+                                            context.startActivity(Intent.createChooser(shareIntent, "Compartir Reporte Bolsa..."))
+                                        },
+                                        border = BorderStroke(1.dp, BorderBlue),
+                                        modifier = Modifier
+                                            .weight(1.2f)
+                                            .height(44.dp)
+                                            .testTag("share_report_button_${h.id}"),
+                                        contentPadding = PaddingValues(horizontal = 8.dp),
+                                        shape = RoundedCornerShape(6.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Share,
+                                            contentDescription = "Compartir Reporte",
+                                            tint = ElectricBlue,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(
+                                            text = "Compartir Reporte",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = ElectricBlue
+                                        )
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
+        } else {
+            if (iaLogs.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(
+                            imageVector = Icons.Default.Psychology,
+                            contentDescription = "No IA reports yet",
+                            tint = GrayText,
+                            modifier = Modifier.size(56.dp)
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = "Historial Consultoría IA Vacío",
+                            color = LightText,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Ejecuta un análisis con la 'Mesa de Consultores IA' en la pestaña AI Coach para guardar tus informes aquí de forma permanente.",
+                            color = GrayText,
+                            fontSize = 11.sp,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(horizontal = 24.dp)
+                        )
+                    }
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    contentPadding = PaddingValues(bottom = 16.dp)
+                ) {
+                    items(iaLogs) { log ->
+                        var isExpanded by remember { mutableStateOf(false) }
+
+                        Card(
+                            modifier = Modifier.fillMaxWidth().clickable { isExpanded = !isExpanded },
+                            colors = CardDefaults.cardColors(containerColor = CardSlate),
+                            border = BorderStroke(1.dp, if (isExpanded) EmeraldGreen.copy(alpha = 0.5f) else BorderBlue.copy(alpha = 0.3f)),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            imageVector = Icons.Default.Article,
+                                            contentDescription = "IA Report",
+                                            tint = EmeraldGreen,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Column {
+                                            Text(
+                                                text = log.ticker,
+                                                fontSize = 15.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = LightText
+                                            )
+                                            Text(
+                                                text = "Precio: ${String.format("%.2f", log.price)}",
+                                                fontSize = 11.sp,
+                                                color = GrayText
+                                            )
+                                        }
+                                    }
+
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Text(
+                                            text = log.date,
+                                            fontSize = 10.5.sp,
+                                            color = GrayText
+                                        )
+                                        IconButton(
+                                            onClick = { viewModel.deleteIaAnalysisHistoryById(log.id) },
+                                            modifier = Modifier.size(24.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Close,
+                                                contentDescription = "Eliminar",
+                                                tint = CoralRed.copy(alpha = 0.8f),
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        }
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(10.dp))
+
+                                val lineList = log.adviceText.split("\n")
+                                val verdictLine = lineList.find { it.contains("RECOMENDACIÓN:") || it.contains("VEREDICTO_MESA:") } ?: ""
+                                val cleanestVerdict = when {
+                                    verdictLine.isNotBlank() -> verdictLine.replace("VEREDICTO_MESA:", "").trim()
+                                    log.adviceText.contains("COMPRAR") -> "CONSENSO: COMPRAR"
+                                    log.adviceText.contains("VENDER") -> "CONSENSO: VENDER"
+                                    else -> "CONSENSO: ESPERAR"
+                                }
+
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .background(MidnightNavy, RoundedCornerShape(4.dp))
+                                        .padding(horizontal = 6.dp, vertical = 3.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(6.dp)
+                                            .background(
+                                                when {
+                                                    cleanestVerdict.contains("COMPRA") || cleanestVerdict.contains("COMPRAR") -> EmeraldGreen
+                                                    cleanestVerdict.contains("VENTA") || cleanestVerdict.contains("VENDER") -> CoralRed
+                                                    else -> AmberGold
+                                                },
+                                                RoundedCornerShape(3.dp)
+                                            )
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = cleanestVerdict,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = LightText
+                                    )
+                                }
+
+                                Spacer(modifier = Modifier.height(8.dp))
+
+                                Text(
+                                    text = if (isExpanded) log.adviceText else if (log.adviceText.length > 160) log.adviceText.take(160) + "..." else log.adviceText,
+                                    fontSize = 12.sp,
+                                    color = LightText,
+                                    lineHeight = 17.sp
+                                )
+
+                                Spacer(modifier = Modifier.height(10.dp))
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = if (isExpanded) "ocultar detalles 🔼" else "toca para expandir informe completo 🔽",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = ElectricBlue
+                                    )
+
+                                    IconButton(
+                                        onClick = {
+                                            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                                type = "text/plain"
+                                                putExtra(Intent.EXTRA_SUBJECT, "Mesa de Asesores de Bolsa AI: ${log.ticker}")
+                                                putExtra(Intent.EXTRA_TEXT, log.adviceText)
+                                            }
+                                            context.startActivity(Intent.createChooser(shareIntent, "Compartir Consulta Bolsa..."))
+                                        },
+                                        modifier = Modifier
+                                            .size(32.dp)
+                                            .background(BorderBlue.copy(alpha = 0.3f), RoundedCornerShape(6.dp))
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Share,
+                                            contentDescription = "Compartir",
+                                            tint = ElectricBlue,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        selectedAlertReport?.let { report ->
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { selectedAlertReport = null },
+                confirmButton = {
+                    TextButton(onClick = { selectedAlertReport = null }) {
+                        Text("Cerrar", color = ElectricBlue, fontWeight = FontWeight.Bold)
+                    }
+                },
+                title = {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Article,
+                            contentDescription = null,
+                            tint = EmeraldGreen,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Column {
+                            Text(
+                                text = "Informe de Alerta: ${report.ticker}",
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = LightText
+                            )
+                            Text(
+                                text = "Disparado el ${SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault()).format(Date(report.timestamp))}",
+                                fontSize = 11.sp,
+                                color = GrayText
+                            )
+                        }
+                    }
+                },
+                text = {
+                    val reportScroll = rememberScrollState()
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 350.dp)
+                            .verticalScroll(reportScroll)
+                            .padding(vertical = 8.dp)
+                    ) {
+                        Text(
+                            text = "Condición de Salto:",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp,
+                            color = GrayText
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = report.message,
+                            fontSize = 13.sp,
+                            color = LightText,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Divider(color = BorderBlue.copy(alpha = 0.5f))
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            text = "Análisis Detallado de la Mesa de Asesores:",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp,
+                            color = GrayText
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = report.emailContent.ifBlank { "No se generó informe detallado para esta alerta de precio rápida." },
+                            fontSize = 12.sp,
+                            color = LightText,
+                            lineHeight = 18.sp
+                        )
+                    }
+                },
+                containerColor = MidnightNavy,
+                titleContentColor = LightText,
+                textContentColor = LightText,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.border(1.dp, BorderBlue, RoundedCornerShape(12.dp))
+            )
         }
     }
 }
@@ -1575,6 +2113,8 @@ fun TechnicalAssistantScreen(viewModel: StockAgentViewModel) {
     val isRunning by viewModel.isAiRunning.collectAsStateWithLifecycle()
     val advice by viewModel.aiRecommendation.collectAsStateWithLifecycle()
     val selectedTraders by viewModel.selectedTraders.collectAsStateWithLifecycle()
+    val selectedAiProvider by viewModel.selectedAiProvider.collectAsStateWithLifecycle()
+    var menuExpanded by remember { mutableStateOf(false) }
 
     val scrollState = rememberScrollState()
     val context = LocalContext.current
@@ -1655,6 +2195,98 @@ fun TechnicalAssistantScreen(viewModel: StockAgentViewModel) {
                     color = GrayText,
                     lineHeight = 16.sp
                 )
+            }
+        }
+
+        // Dropdown AI Provider Selector
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = CardSlate),
+            shape = RoundedCornerShape(12.dp),
+            border = BorderStroke(1.dp, BorderBlue)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { menuExpanded = true }
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Settings,
+                        contentDescription = "AI Model",
+                        tint = ElectricBlue,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column {
+                        Text(
+                            text = "PROVEEDOR DE INTELIGENCIA ARTIFICIAL",
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = GrayText,
+                            letterSpacing = 0.5.sp
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        val providerLabel = when (selectedAiProvider) {
+                            "DEEPSEEK" -> "DeepSeek-R1 (Pensamiento Analítico)"
+                            "KIMI" -> "Kimi Chat (Tendencia Rápida)"
+                            else -> "Gemini 2.5 Flash (Google - Por Defecto)"
+                        }
+                        Text(
+                            text = providerLabel,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = LightText
+                        )
+                    }
+                }
+                Box {
+                    Icon(
+                        imageVector = Icons.Default.ArrowDropDown,
+                        contentDescription = "Cambiar IA",
+                        tint = GrayText,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    DropdownMenu(
+                        expanded = menuExpanded,
+                        onDismissRequest = { menuExpanded = false },
+                        modifier = Modifier.background(MidnightNavy).border(1.dp, BorderBlue, RoundedCornerShape(8.dp))
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Gemini 2.5 Flash (Google)", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 13.sp) },
+                            onClick = {
+                                viewModel.setSelectedAiProvider("GEMINI")
+                                menuExpanded = false
+                            },
+                            leadingIcon = { Icon(Icons.Default.Psychology, contentDescription = null, tint = ElectricBlue, modifier = Modifier.size(18.dp)) }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("DeepSeek-R1 (Fidelidad)", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 13.sp) },
+                            onClick = {
+                                viewModel.setSelectedAiProvider("DEEPSEEK")
+                                menuExpanded = false
+                            },
+                            leadingIcon = { Icon(Icons.Default.Info, contentDescription = null, tint = EmeraldGreen, modifier = Modifier.size(18.dp)) }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Kimi Chat (Moonshot)", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 13.sp) },
+                            onClick = {
+                                viewModel.setSelectedAiProvider("KIMI")
+                                menuExpanded = false
+                            },
+                            leadingIcon = { Icon(Icons.Default.TrendingUp, contentDescription = null, tint = AmberGold, modifier = Modifier.size(18.dp)) }
+                        )
+                        Divider(color = BorderBlue.copy(alpha = 0.4f))
+                        DropdownMenuItem(
+                            text = { Text("Próximamente más opciones...", color = GrayText, fontSize = 12.sp) },
+                            onClick = {},
+                            enabled = false
+                        )
+                    }
+                }
             }
         }
 

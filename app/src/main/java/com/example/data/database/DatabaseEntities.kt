@@ -20,6 +20,8 @@ data class StockAlert(
     val alertTrend: String? = "NONE", // "BULLISH", "BEARISH", "NONE"
     val email: String,
     val isActive: Boolean = true,
+    val condLogicalOperator: String? = "NONE", // "AND", "OR", "NONE"
+    val unusualVolumeMultiplier: Double? = null, // e.g. 2.0 means 2x average historical volume
     val createdAt: Long = System.currentTimeMillis()
 )
 
@@ -32,5 +34,15 @@ data class AlertHistory(
     val message: String,
     val emailSent: Boolean,
     val emailContent: String,
+    val timestamp: Long = System.currentTimeMillis()
+)
+
+@Entity(tableName = "ia_analysis_history")
+data class IaAnalysisHistory(
+    @PrimaryKey(autoGenerate = true) val id: Int = 0,
+    val ticker: String,
+    val date: String,
+    val price: Double,
+    val adviceText: String,
     val timestamp: Long = System.currentTimeMillis()
 )

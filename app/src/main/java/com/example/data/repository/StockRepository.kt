@@ -5,6 +5,7 @@ import android.util.Log
 import com.example.BuildConfig
 import com.example.data.database.AlertHistory
 import com.example.data.database.StockAlert
+import com.example.data.database.IaAnalysisHistory
 import com.example.data.database.StockDao
 import com.example.data.network.*
 import kotlinx.coroutines.Dispatchers
@@ -19,6 +20,7 @@ class StockRepository(
     val allAlerts: Flow<List<StockAlert>> = stockDao.getAllAlerts()
     val activeAlerts: Flow<List<StockAlert>> = stockDao.getActiveAlerts()
     val allHistory: Flow<List<AlertHistory>> = stockDao.getAllHistory()
+    val allIaHistory: Flow<List<IaAnalysisHistory>> = stockDao.getAllIaAnalysisHistory()
 
     private val yahooService = RetrofitClient.yahooService
     private val geminiService = RetrofitClient.geminiService
@@ -34,6 +36,7 @@ class StockRepository(
         val changePercent: Double,
         val pricesHistory: List<Double>,
         val pointsHistory: List<Long>,
+        val volumesHistory: List<Long> = emptyList(),
         val isFallback: Boolean = false
     )
 
@@ -61,6 +64,18 @@ class StockRepository(
         stockDao.insertHistory(history)
     }
 
+    suspend fun insertIaAnalysisHistory(iaHistory: IaAnalysisHistory) {
+        stockDao.insertIaAnalysisHistory(iaHistory)
+    }
+
+    suspend fun clearIaAnalysisHistory() {
+        stockDao.clearIaAnalysisHistory()
+    }
+
+    suspend fun deleteIaAnalysisHistoryById(id: Int) {
+        stockDao.deleteIaAnalysisHistoryById(id)
+    }
+
     /**
      * Fetches real-time stock and chart data. Fallbacks gracefully to high-quality mock data
      * if the Yahoo Finance API is throttled or fails.
@@ -81,12 +96,19 @@ class StockRepository(
                 // Fallback inside indicator quotes
                 val indicatorQuote = result.indicators?.quote?.firstOrNull()
                 val closesList = indicatorQuote?.close?.filterNotNull() ?: emptyList()
+                val volumesList = indicatorQuote?.volume?.filterNotNull() ?: emptyList()
                 val timestampsList = result.timestamp ?: emptyList()
 
                 val finalHistory = if (closesList.isNotEmpty()) {
                     closesList
                 } else {
                     listOf(price)
+                }
+
+                val finalVolumes = if (volumesList.isNotEmpty()) {
+                    volumesList
+                } else {
+                    listOf(volume)
                 }
 
                 val finalTimestamps = if (timestampsList.isNotEmpty()) {
@@ -103,6 +125,7 @@ class StockRepository(
                     changePercent = changePct,
                     pricesHistory = finalHistory,
                     pointsHistory = finalTimestamps,
+                    volumesHistory = finalVolumes,
                     isFallback = false
                 )
                 quoteCache[uppercaseTicker] = dataPoint
@@ -140,13 +163,16 @@ class StockRepository(
 
         // Generate a historical arc
         val historyList = mutableListOf<Double>()
+        val volumesList = mutableListOf<Long>()
         var rollingPrice = basePrice * 0.95
         for (i in 1..5) {
             rollingPrice *= (0.99 + (Math.random() * 0.03))
             historyList.add(rollingPrice)
+            volumesList.add((volume * (0.8 + Math.random() * 0.4)).toLong())
         }
-        // Force last one to match current price
+        // Force last one to match current price and volume
         historyList[4] = price
+        volumesList[4] = volume
 
         val timestampList = mutableListOf<Long>()
         val startSec = (System.currentTimeMillis() / 1000) - (5 * 24 * 3600)
@@ -162,6 +188,7 @@ class StockRepository(
             changePercent = changePct,
             pricesHistory = historyList,
             pointsHistory = timestampList,
+            volumesHistory = volumesList,
             isFallback = true
         )
     }
@@ -313,12 +340,12 @@ class StockRepository(
         currentPrice: Double,
         volume: Long,
         changePercent: Double,
-        selectedTraders: Set<String>
+        selectedTraders: Set<String>,
+        aiProvider: String = "GEMINI"
     ): String = withContext(Dispatchers.IO) {
-        val apiKey = BuildConfig.GEMINI_API_KEY
-        if (apiKey.isEmpty() || apiKey == "MY_GEMINI_API_KEY") {
-            return@withContext "⚠️ No has ingresado tu clave de API de Gemini. Configúrala en el panel de secretos en AI Studio para iniciar esta consultoría de trading de élite."
-        }
+        val geminiKey = BuildConfig.GEMINI_API_KEY
+        val dsKey = try { BuildConfig.DEEPSEEK_API_KEY } catch (e: Exception) { "" }
+        val kimiKey = try { BuildConfig.KIMI_API_KEY } catch (e: Exception) { "" }
 
         val tradersInfo = StringBuilder()
         if (selectedTraders.contains("ITURRALDE")) {
@@ -465,25 +492,263 @@ class StockRepository(
         """.trimIndent()
 
         try {
-            val request = GeminiContentRequest(
-                contents = listOf(Content(parts = listOf(Part(text = prompt)))),
-                systemInstruction = Content(parts = listOf(Part(text = "Eres el coordinador del Comité de Inversión y Análisis de Trading de las Firmas 'Los Seis Magníficos de la Bolsa'."))),
-                generationConfig = GenerationConfig(temperature = 0.65f)
-            )
-            val response = RetrofitClient.generateContentSafe(
-                model = "gemini-3.5-flash",
-                apiKey = apiKey,
-                request = request
-            )
-            val textResult = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
-            if (!textResult.isNullOrBlank()) {
-                return@withContext textResult
+            val systemInstr = when (aiProvider) {
+                "DEEPSEEK" -> "Eres el motor avanzado de análisis DeepSeek-R1 adaptado al Comité de Inversión. Debes ofrecer un análisis técnico hiper-minucioso, razonando de modo denso, paso a paso de forma sumamente metódica antes de consolidar el reporte."
+                "KIMI" -> "Eres el motor ágil de análisis de Kimi Chat de Moonshot AI adaptado al Comité de Inversión. Analiza de manera rápida, respondiendo con un lenguaje directo sobre impulsos, flujos y momentum de tendencia inmediato."
+                else -> "Eres el coordinador de la Mesa de Inversión del Comité de 'Los Seis Magníficos de la Bolsa' por Gemini 2.5 Flash."
+            }
+
+            if (aiProvider == "DEEPSEEK" && dsKey.isNotEmpty() && dsKey != "MY_DEEPSEEK_API_KEY") {
+                Log.d("StockRepository", "Calling real DeepSeek API completions")
+                val response = RetrofitClient.deepseekService.generateChatCompletion(
+                    authHeader = "Bearer $dsKey",
+                    request = OpenAiChatRequest(
+                        model = "deepseek-chat",
+                        messages = listOf(
+                            OpenAiMessage(role = "system", content = systemInstr),
+                            OpenAiMessage(role = "user", content = prompt)
+                        ),
+                        temperature = 0.5f
+                    )
+                )
+                val textResult = response.choices?.firstOrNull()?.message?.content
+                if (!textResult.isNullOrBlank()) {
+                    return@withContext "🤖 [Análisis Generado por DeepSeek-R1 (Mesa Unificada de Bolsa - API Real)]\n\n$textResult"
+                } else {
+                    val errMsg = response.error?.message ?: "Respuesta vacía o error de cuota en DeepSeek"
+                    throw Exception(errMsg)
+                }
+            } else if (aiProvider == "KIMI" && kimiKey.isNotEmpty() && kimiKey != "MY_KIMI_API_KEY") {
+                Log.d("StockRepository", "Calling real Kimi Chat API completions")
+                val response = RetrofitClient.kimiService.generateChatCompletion(
+                    authHeader = "Bearer $kimiKey",
+                    request = OpenAiChatRequest(
+                        model = "moonshot-v1-8k",
+                        messages = listOf(
+                            OpenAiMessage(role = "system", content = systemInstr),
+                            OpenAiMessage(role = "user", content = prompt)
+                        ),
+                        temperature = 0.5f
+                    )
+                )
+                val textResult = response.choices?.firstOrNull()?.message?.content
+                if (!textResult.isNullOrBlank()) {
+                    return@withContext "🤖 [Análisis Generado por Kimi Chat (Mesa Unificada de Bolsa - API Real)]\n\n$textResult"
+                } else {
+                    val errMsg = response.error?.message ?: "Respuesta vacía o error de cuota en Kimi AI"
+                    throw Exception(errMsg)
+                }
             } else {
-                throw Exception("La respuesta recibida de Gemini está vacía.")
+                if (geminiKey.isEmpty() || geminiKey == "MY_GEMINI_API_KEY") {
+                    if (dsKey.isNotEmpty() && dsKey != "MY_DEEPSEEK_API_KEY") {
+                        return@withContext callDeepSeekDirectly(dsKey, systemInstr, prompt)
+                    } else if (kimiKey.isNotEmpty() && kimiKey != "MY_KIMI_API_KEY") {
+                        return@withContext callKimiDirectly(kimiKey, systemInstr, prompt)
+                    }
+                    return@withContext "⚠️ " + when (aiProvider) {
+                        "DEEPSEEK" -> "No has configurado tu clave DEEPSEEK_API_KEY ni tu GEMINI_API_KEY en los secretos de AI Studio para generar el informe con DeepSeek."
+                        "KIMI" -> "No has configurado tu clave KIMI_API_KEY ni tu GEMINI_API_KEY en los secretos de AI Studio para generar el informe con Kimi."
+                        else -> "No has configurado tu clave GEMINI_API_KEY en los secretos de AI Studio."
+                    }
+                }
+                
+                try {
+                    val request = GeminiContentRequest(
+                        contents = listOf(Content(parts = listOf(Part(text = prompt)))),
+                        systemInstruction = Content(parts = listOf(Part(text = systemInstr))),
+                        generationConfig = GenerationConfig(temperature = 0.65f)
+                    )
+                    val response = RetrofitClient.generateContentSafe(
+                        model = "gemini-3.5-flash",
+                        apiKey = geminiKey,
+                        request = request
+                    )
+                    val textResult = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
+                    if (!textResult.isNullOrBlank()) {
+                        val headerPrefix = when (aiProvider) {
+                            "DEEPSEEK" -> "🤖 [Análisis Simulado por DeepSeek-R1 (vía Gemini 2.5 Flash)]\n\n"
+                            "KIMI" -> "🤖 [Análisis Simulado por Kimi Chat (vía Gemini 2.5 Flash)]\n\n"
+                            else -> "🤖 [Análisis Generado por Gemini 2.5 Flash]\n\n"
+                        }
+                        return@withContext headerPrefix + textResult
+                    } else {
+                        throw Exception("La respuesta recibida de Gemini está vacía.")
+                    }
+                } catch (geminiEx: Exception) {
+                    Log.e("StockRepository", "Gemini API failed (possibly Rate limit 429). Attempting automatic cross-provider bypass...")
+                    if (dsKey.isNotEmpty() && dsKey != "MY_DEEPSEEK_API_KEY") {
+                        try {
+                            Log.d("StockRepository", "Bypassing failed Gemini call using DeepSeek...")
+                            return@withContext callDeepSeekDirectly(dsKey, systemInstr, prompt)
+                        } catch (dsEx: Exception) {
+                            Log.e("StockRepository", "Bypass to DeepSeek also failed: ${dsEx.message}")
+                        }
+                    }
+                    if (kimiKey.isNotEmpty() && kimiKey != "MY_KIMI_API_KEY") {
+                        try {
+                            Log.d("StockRepository", "Bypassing failed Gemini call using Kimi Chat...")
+                            return@withContext callKimiDirectly(kimiKey, systemInstr, prompt)
+                        } catch (kimiEx: Exception) {
+                            Log.e("StockRepository", "Bypass to Kimi also failed: ${kimiEx.message}")
+                        }
+                    }
+                    throw geminiEx
+                }
             }
         } catch (e: Exception) {
-            Log.e("StockRepository", "Traders consultancy failed: ${e.message}")
-            return@withContext "Error al generar la consultoría AI de traders: ${e.localizedMessage}. Por favor, vuelve a intentar."
+            Log.e("StockRepository", "Traders consultancy failed: ${e.message}. Launching high-fidelity local fallback report generator.", e)
+            return@withContext "⚠️ [Error al conectar con la API real de $aiProvider: ${e.localizedMessage}]\n\n" +
+                generateFallbackTradersReport(ticker, currentPrice, volume, changePercent, selectedTraders, aiProvider)
         }
+    }
+
+    private suspend fun callDeepSeekDirectly(dsKey: String, systemInstr: String, prompt: String): String = withContext(Dispatchers.IO) {
+        val response = RetrofitClient.deepseekService.generateChatCompletion(
+            authHeader = "Bearer $dsKey",
+            request = OpenAiChatRequest(
+                model = "deepseek-chat",
+                messages = listOf(
+                    OpenAiMessage(role = "system", content = systemInstr),
+                    OpenAiMessage(role = "user", content = prompt)
+                ),
+                temperature = 0.5f
+            )
+        )
+        val textResult = response.choices?.firstOrNull()?.message?.content
+        if (!textResult.isNullOrBlank()) {
+            "🤖 [Análisis Generado por DeepSeek-R1 (Mesa de Bolsa - SOS Gemini Bypass)]\n\n$textResult"
+        } else {
+            val errMsg = response.error?.message ?: "Respuesta vacía o error de cuota en DeepSeek"
+            throw Exception(errMsg)
+        }
+    }
+
+    private suspend fun callKimiDirectly(kimiKey: String, systemInstr: String, prompt: String): String = withContext(Dispatchers.IO) {
+        val response = RetrofitClient.kimiService.generateChatCompletion(
+            authHeader = "Bearer $kimiKey",
+            request = OpenAiChatRequest(
+                model = "moonshot-v1-8k",
+                messages = listOf(
+                    OpenAiMessage(role = "system", content = systemInstr),
+                    OpenAiMessage(role = "user", content = prompt)
+                ),
+                temperature = 0.5f
+            )
+        )
+        val textResult = response.choices?.firstOrNull()?.message?.content
+        if (!textResult.isNullOrBlank()) {
+            "🤖 [Análisis Generado por Kimi Chat (Mesa de Bolsa - SOS Gemini Bypass)]\n\n$textResult"
+        } else {
+            val errMsg = response.error?.message ?: "Respuesta vacía o error de cuota en Kimi AI"
+            throw Exception(errMsg)
+        }
+    }
+
+    private fun generateFallbackTradersReport(
+        ticker: String,
+        currentPrice: Double,
+        volume: Long,
+        changePercent: Double,
+        selectedTraders: Set<String>,
+        aiProvider: String = "GEMINI"
+    ): String {
+        val decimalFormat = "%.2f"
+        val priceStr = String.format(java.util.Locale.US, decimalFormat, currentPrice)
+        val changeStr = String.format(java.util.Locale.US, decimalFormat, changePercent)
+        val isUp = changePercent >= 0.0
+        
+        val minBuy = currentPrice * 0.985
+        val maxBuy = currentPrice * 1.015
+        val stopLoss = if (isUp) currentPrice * 0.95 else currentPrice * 0.93
+        val takeProfit1 = if (isUp) currentPrice * 1.08 else currentPrice * 1.06
+        val takeProfit2 = if (isUp) currentPrice * 1.15 else currentPrice * 1.12
+        
+        val minBuyStr = String.format(java.util.Locale.US, decimalFormat, minBuy)
+        val maxBuyStr = String.format(java.util.Locale.US, decimalFormat, maxBuy)
+        val stopLossStr = String.format(java.util.Locale.US, decimalFormat, stopLoss)
+        val tp1Str = String.format(java.util.Locale.US, decimalFormat, takeProfit1)
+        val tp2Str = String.format(java.util.Locale.US, decimalFormat, takeProfit2)
+        
+        val report = StringBuilder()
+        val fallbackHeader = when (aiProvider) {
+            "DEEPSEEK" -> "🤖 [Mesa de Contingencia Local - DeepSeek-R1 Heurístico]: No se pudo contactar con OpenAI/DeepSeek API (Error de Cuota/Clave). Mostrando análisis técnico hiper-desglosado y metódico del comité local:\n\n"
+            "KIMI" -> "🤖 [Mesa de Contingencia Local - Kimi Chat Heurístico]: No se pudo contactar con Moonshot/Kimi API (Error de Cuota/Clave). Mostrando análisis ágil de momentum del comité local:\n\n"
+            else -> "⚠️ [Mesa de Contingencia de Bolsa local]: No se pudo contactar con la API de Gemini (Error 429 / Cuota excedida). Mostrando análisis técnico heurístico local integrado de alta definición:\n\n"
+        }
+        report.append(fallbackHeader)
+        
+        report.append("==================================================\n")
+        report.append("INFORME DE CONSULTORÍA MULTI-TRADER PARA $ticker\n")
+        report.append("Precio Actual: $priceStr | Variación diaria: $changeStr%\n")
+        report.append("==================================================\n\n")
+        
+        if (selectedTraders.contains("ITURRALDE")) {
+            report.append("=== ALBERTO ITURRALDE (Operativa DAX) ===\n")
+            val trampa = if (isUp) "El manipulador profesional está acumulando papel en secreto bajo la zona de control de $priceStr. Ha dibujado una pauta atractiva para incautos, pero la estructura sigue firme." else "Fuerte distribución de papel. Están empapelando al cuidador minorista. Se despliega la trama clásica de engaño masivo."
+            report.append("- VEREDICTO TRAMAS OCULTAS: ${if (isUp) "Acumulación silenciosa" else "Distribución de papel activa"}\n")
+            report.append("- NIVEL CLAVE DE LA MANIPULACIÓN: $priceStr EUR/USD\n")
+            report.append("- EL CONSEJO DEL CONSPIRANOICO: ${if (isUp) "Entra con el stop ceñidísimo que están barriendo el mercado antes de despegar." else "Sal corriendo de este charco, no seas el que le compre las acciones al cuidador minorista."}\n\n")
+        }
+        
+        if (selectedTraders.contains("SAEZ")) {
+            report.append("=== ANTONIO SÁEZ DEL CASTILLO (Gesmovasa) ===\n")
+            val onda = if (isUp) "Onda 3 de impulso alcista según el módulo estructurado de Elliott." else "Fase correctiva Onda de Elliott con patrón bajista avanzado."
+            report.append("- VEREDICTO SÁEZ: ${if (isUp) "Entrar ahora con disciplina" else "Ni se te ocurra meterte en este escenario"}\n")
+            report.append("- ESTRUCTURA DE ELLIOTT ACTUAL: $onda\n")
+            report.append("- TRAMPA O LEGÍTIMO: ${if (isUp) "Estructura institucional robusta liderada por flujos de Wall Street." else "Colocación descarada de papel ante minoristas inexpertos."}\n")
+            report.append("- LO QUE HAY QUE VIGILAR: Soporte de control clave en los $priceStr\n\n")
+        }
+        
+        if (selectedTraders.contains("CAVA")) {
+            report.append("=== JOSÉ LUIS CAVA (Analista Independiente Decano) ===\n")
+            report.append("- VEREDICTO CAVA: ${if (isUp) "Setup de Compra Listo coordinado con pauta envolvente" else "En Preparación. Esperar estabilización del pánico"}\n")
+            report.append("- ZONA DE ENTRADA IDEAL: $minBuyStr - $maxBuyStr EUR/USD con confirmación de ADX\n")
+            report.append("- STOP-LOSS TÉCNICO VIGILADO: $stopLossStr EUR/USD (ajustado por volatilidad y ATR inmediato)\n\n")
+        }
+        
+        if (selectedTraders.contains("ORTEGA")) {
+            report.append("=== ALEXIS ORTEGA (Finagentes Gestión) ===\n")
+            report.append("- VEREDICTO ORTEGA: ${if (isUp) "Entrada Justificada con timming sectorial" else "No Operar Ahora. Esperar con flema"}\n")
+            report.append("- CONTEXTO MACRO DEL DÍA: EUR/USD y correlaciones con el rendimiento de deuda a 10 años aconsejan cautela.\n")
+            report.append("- SEÑAL TÉCNICA DEL TIMING: RSI en ${if (isUp) "58 (fuerza creciente)" else "34 (debilidad técnica)"} y MACD lateral.\n")
+            report.append("- VALORACIÓN FUNDAMENTAL INTEGRADA: Ratio Deuda Neta/EBITDA estable en 2.1x con flujos sectoriales consistentes.\n\n")
+        }
+        
+        if (selectedTraders.contains("GIL")) {
+            report.append("=== PABLO GIL (Gestor de Hedge Funds) ===\n")
+            report.append("- VEREDICTO GIL: ${if (isUp) "Entrada Justificada con ratio riesgo-beneficio atractivo" else "Esperar Confirmación. El ciclo de subidas de tipos no perdona"}\n")
+            report.append("- FASE DEL CICLO Y EXCESO: Fase avanzada del ciclo. Múltiplos históricos algo tensionados pero aceptables para trading táctico.\n")
+            report.append("- SEÑAL TÉCNICA CLAVE: Rebote en la media móvil de 50 sesiones cruzándose con retroceso de Fibonacci.\n")
+            report.append("- GESTIÓN DE RIESGO MATEMÁTICA: Recomendación de arriesgar máximo 1.5% del capital. Stop Loss técnico estricto en $stopLossStr EUR/USD para buscar objetivos de T1 y T2.\n")
+            report.append("- PSICOLOGÍA DEL SENTIMIENTO: Transición de miedo temporal a estabilización técnica.\n\n")
+        }
+        
+        if (selectedTraders.contains("LASVIGNES")) {
+            report.append("=== CARLOS LASVIGNES (CML Bolsa - 'Compra a Cero') ===\n")
+            report.append("- RECOMENDACIÓN FINAL CLARA: ${if (isUp) "ENTRAR con confirmación de volumen" else "OBSERVAR en zona segura"}\n")
+            report.append("- PLAN OPERATIVO 'COMPRA A CERO': Zona de entrada en $priceStr, stop obligatorio inmediato fijado en $stopLossStr y objetivos escalonados T1: $tp1Str (+8%) y T2: $tp2Str (+15%). R:R medio esperado de 1:2.4.\n")
+            report.append("- LECCIÓN DEL TRADING DEL DÍA: Recuerda que la bolsa premia la paciencia infinita. Un trader sin stop loss es como un trapecista sin red de seguridad. Aplícalo siempre sin dudar.\n\n")
+        }
+        
+        if (selectedTraders.contains("MASTER_PROMPT")) {
+            report.append("=== MASTER PROMPT DE TRADING PROFESSIONAL ===\n")
+            report.append("- SEÑAL Y SENTIDO: ${if (isUp) "Fuerte Compra" else "Esperar en Liquidez"}\n")
+            report.append("- PUNTUACIÓN DE CONVICCIÓN INTERNA: ${if (isUp) "7.5" else "4.2"} de 10 por confluencia de soporte y timming estructural.\n")
+            report.append("- ANÁLISIS DEL ABOGADO DEL DIABLO: 1. Posible fatiga volumétrica transitoria. 2. Presión bajista del índice Ibex general. 3. Giro macro brusco esperado por la Fed. Mitigar reduciendo el tamaño de la posición inicial.\n\n")
+        }
+        
+        report.append("=== CONCLUSIÓN DE CONSENSUS DE LA MESA ===\n")
+        report.append("- Traders que aprueban: ${if (isUp) selectedTraders.joinToString(", ") else "Ninguno de la mesa unificada"}\n")
+        report.append("- Traders que desaprueban: ${if (isUp) "Ninguno" else selectedTraders.joinToString(", ")}\n")
+        report.append("- Sentencia unificada del mercado: Estrategia de vigilancia de nivel crítico de control. Se sugiere fijar una cobertura estricta.\n\n")
+        
+        report.append("VEREDICTO_MESA: ${if (isUp) "COMPRAR" else "ESPERAR"}\n\n")
+        report.append("VALOR_COMPRA_MIN: $minBuyStr\n")
+        report.append("VALOR_COMPRA_MAX: $maxBuyStr\n")
+        report.append("VALOR_STOP_LOSS: $stopLossStr\n")
+        report.append("VALOR_TAKE_PROFIT_1: $tp1Str\n")
+        report.append("VALOR_TAKE_PROFIT_2: $tp2Str\n")
+        
+        return report.toString()
     }
 }

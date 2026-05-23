@@ -36,4 +36,17 @@ interface StockDao {
 
     @Query("DELETE FROM alert_history")
     suspend fun clearHistory()
+
+    // IA Analysis history queries
+    @Query("SELECT * FROM ia_analysis_history ORDER BY timestamp DESC")
+    fun getAllIaAnalysisHistory(): Flow<List<IaAnalysisHistory>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertIaAnalysisHistory(iaHistory: IaAnalysisHistory)
+
+    @Query("DELETE FROM ia_analysis_history")
+    suspend fun clearIaAnalysisHistory()
+
+    @Query("DELETE FROM ia_analysis_history WHERE id = :id")
+    suspend fun deleteIaAnalysisHistoryById(id: Int)
 }

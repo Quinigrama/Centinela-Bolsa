@@ -11,6 +11,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.data.database.AlertHistory
 import com.example.data.database.AppDatabase
 import com.example.data.database.StockAlert
+import com.example.data.database.IaAnalysisHistory
 import com.example.data.repository.StockRepository
 import com.example.data.network.*
 import kotlinx.coroutines.Dispatchers
@@ -25,7 +26,7 @@ import kotlinx.coroutines.withContext
 class StockAgentViewModel(application: Application) : AndroidViewModel(application) {
 
     private val database = AppDatabase.getDatabase(application)
-    private val repository = StockRepository(database.stockDao(), application)
+    val repository = StockRepository(database.stockDao(), application)
 
     // Flow lists representing interactive UI elements
     val allAlerts: StateFlow<List<StockAlert>> = repository.allAlerts
@@ -36,6 +37,13 @@ class StockAgentViewModel(application: Application) : AndroidViewModel(applicati
         )
 
     val allHistory: StateFlow<List<AlertHistory>> = repository.allHistory
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+
+    val allIaHistory: StateFlow<List<IaAnalysisHistory>> = repository.allIaHistory
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000),
@@ -81,6 +89,13 @@ class StockAgentViewModel(application: Application) : AndroidViewModel(applicati
     private val _selectedTraders = MutableStateFlow<Set<String>>(setOf("LASVIGNES"))
     val selectedTraders = _selectedTraders.asStateFlow()
 
+    private val _selectedAiProvider = MutableStateFlow("GEMINI") // "GEMINI", "DEEPSEEK", "KIMI"
+    val selectedAiProvider = _selectedAiProvider.asStateFlow()
+
+    fun setSelectedAiProvider(provider: String) {
+        _selectedAiProvider.value = provider
+    }
+
     private val _activeNotification = MutableStateFlow<Triple<String, String, String>?>(null)
     val activeNotification = _activeNotification.asStateFlow()
 
@@ -95,18 +110,30 @@ class StockAgentViewModel(application: Application) : AndroidViewModel(applicati
     private val _configNamePrefill = MutableStateFlow("")
     val configNamePrefill = _configNamePrefill.asStateFlow()
 
+    private val _configTrendPrefill = MutableStateFlow("")
+    val configTrendPrefill = _configTrendPrefill.asStateFlow()
+
+    private val _refreshTrigger = MutableStateFlow(0)
+    val refreshTrigger = _refreshTrigger.asStateFlow()
+
+    fun triggerRefresh() {
+        _refreshTrigger.value += 1
+    }
+
     // JOB FOR CANCELLING CURRENT SECHEDULER SCANNING
     private var monitoringJob: kotlinx.coroutines.Job? = null
 
-    fun prefillConfigureScreen(ticker: String, name: String) {
+    fun prefillConfigureScreen(ticker: String, name: String, trend: String = "") {
         _configTickerPrefill.value = ticker
         _configNamePrefill.value = name
+        _configTrendPrefill.value = trend
         _selectedTab.value = 1 // Switch to Configurar screen (tab 1)
     }
 
     fun clearConfigurePrefill() {
         _configTickerPrefill.value = ""
         _configNamePrefill.value = ""
+        _configTrendPrefill.value = ""
     }
 
     private fun loadPresets() {
@@ -185,57 +212,56 @@ class StockAgentViewModel(application: Application) : AndroidViewModel(applicati
         loadPresets()
         // Fetch default ticker on launch
         performSearch(force = true)
-        // Insert a default alert if DB is completely empty on launch to give a perfect first-time UX
+        // Check alerts and run initial scan on startup
         viewModelScope.launch(Dispatchers.IO) {
-            database.runInTransaction {
-                // We do a check if any alert exists
-            }
-            // Check count
             try {
-                database.stockDao().getActiveAlertsList().let { list ->
-                    if (list.isEmpty()) {
-                        val defaultAlert1 = StockAlert(
-                            ticker = "SAN.MC",
-                            name = "Banco Santander",
-                            minPrice = 3.90,
-                            maxPrice = 4.80,
-                            minVolume = 5000000L,
-                            pctChange = 2.0,
-                            stopLoss = 3.80,
-                            takeProfit = 4.90,
-                            alertTrend = "BULLISH",
-                            email = "Dispositivo Móvil"
-                        )
-                        val defaultAlert2 = StockAlert(
-                            ticker = "TEF.MC",
-                            name = "Telefónica",
-                            minPrice = 3.50,
-                            maxPrice = 4.20,
-                            minVolume = 3000000L,
-                            pctChange = 1.5,
-                            stopLoss = 3.40,
-                            takeProfit = 4.40,
-                            alertTrend = "NONE",
-                            email = "Dispositivo Móvil"
-                        )
-                        val defaultAlert3 = StockAlert(
-                            ticker = "^IBEX",
-                            name = "IBEX 35",
-                            minPrice = 10800.0,
-                            maxPrice = 11500.0,
-                            minVolume = 100000000L,
-                            pctChange = 1.0,
-                            email = "Dispositivo Móvil"
-                        )
-                        viewModelScope.launch(Dispatchers.IO) {
-                            repository.insertAlert(defaultAlert1)
-                            repository.insertAlert(defaultAlert2)
-                            repository.insertAlert(defaultAlert3)
-                        }
-                    }
+                val list = database.stockDao().getActiveAlertsList()
+                if (list.isEmpty()) {
+                    val defaultAlert1 = StockAlert(
+                        ticker = "SAN.MC",
+                        name = "Banco Santander",
+                        minPrice = 3.90,
+                        maxPrice = 4.80,
+                        minVolume = 5000000L,
+                        pctChange = 2.0,
+                        stopLoss = 3.80,
+                        takeProfit = 4.90,
+                        alertTrend = "BULLISH",
+                        email = "Dispositivo Móvil"
+                    )
+                    val defaultAlert2 = StockAlert(
+                        ticker = "TEF.MC",
+                        name = "Telefónica",
+                        minPrice = 3.50,
+                        maxPrice = 4.20,
+                        minVolume = 3000000L,
+                        pctChange = 1.5,
+                        stopLoss = 3.40,
+                        takeProfit = 4.40,
+                        alertTrend = "NONE",
+                        email = "Dispositivo Móvil"
+                    )
+                    val defaultAlert3 = StockAlert(
+                        ticker = "^IBEX",
+                        name = "IBEX 35",
+                        minPrice = 10800.0,
+                        maxPrice = 11500.0,
+                        minVolume = 100000000L,
+                        pctChange = 1.0,
+                        email = "Dispositivo Móvil"
+                    )
+                    repository.insertAlert(defaultAlert1)
+                    repository.insertAlert(defaultAlert2)
+                    repository.insertAlert(defaultAlert3)
+                }
+                
+                // Trigger initial watchlist preset refresh & start background sentinel evaluation instantly
+                withContext(Dispatchers.Main) {
+                    triggerRefresh()
+                    runMonitoringAgent()
                 }
             } catch (e: Exception) {
-                Log.e("StockAgentViewModel", "Failed creating default alerts: ${e.message}")
+                Log.e("StockAgentViewModel", "Failed creating default alerts or initial run: ${e.message}")
             }
         }
     }
@@ -281,7 +307,9 @@ class StockAgentViewModel(application: Application) : AndroidViewModel(applicati
         email: String,
         tp2: Double? = null,
         minBuyP: Double? = null,
-        maxBuyP: Double? = null
+        maxBuyP: Double? = null,
+        condOperator: String? = "NONE",
+        volMult: Double? = null
     ) {
         viewModelScope.launch(Dispatchers.IO) {
             val alert = StockAlert(
@@ -296,8 +324,16 @@ class StockAgentViewModel(application: Application) : AndroidViewModel(applicati
                 takeProfit2 = tp2,
                 minBuyPrice = minBuyP,
                 maxBuyPrice = maxBuyP,
-                alertTrend = if (trend == "Ninguna") "NONE" else trend,
-                email = "Dispositivo Móvil"
+                alertTrend = when (trend) {
+                    "ALCISTA" -> "BULLISH"
+                    "BAJISTA" -> "BEARISH"
+                    "BULLISH" -> "BULLISH"
+                    "BEARISH" -> "BEARISH"
+                    else -> "NONE"
+                },
+                email = "Dispositivo Móvil",
+                condLogicalOperator = condOperator,
+                unusualVolumeMultiplier = volMult
             )
             repository.insertAlert(alert)
         }
@@ -327,13 +363,13 @@ class StockAgentViewModel(application: Application) : AndroidViewModel(applicati
      */
     fun runMonitoringAgent() {
         if (_isCheckingAlerts.value) {
-            monitoringJob?.cancel()
-            _isCheckingAlerts.value = false
-            _checkingStatus.value = "Vigilancia detenida por el usuario."
             return
         }
         _isCheckingAlerts.value = true
         _checkingStatus.value = "Iniciando vigilancia de bolsa..."
+
+        // Simultaneously trigger custom preset watch list refreshes instantly
+        triggerRefresh()
 
         monitoringJob = viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -360,8 +396,16 @@ class StockAgentViewModel(application: Application) : AndroidViewModel(applicati
 
                         // Determine trend from history
                         val prices = quote.pricesHistory
-                        val isBullish = if (prices.size >= 2) price > prices.first() else false
-                        val isBearish = if (prices.size >= 2) price < prices.first() else false
+                        val isBullish = if (prices.size >= 2) price >= prices.first() else pctChange >= 0.0
+                        val isBearish = if (prices.size >= 2) price < prices.first() else pctChange < 0.0
+
+                        // Calculate average volume from historical sessions
+                        val vols = quote.volumesHistory
+                        val avgVolume = if (vols.size >= 2) {
+                            vols.dropLast(1).average()
+                        } else {
+                            volume.toDouble()
+                        }
 
                         // Check distinct alerts
                         if (alert.alertTrend?.startsWith("TRADERS:") == true) {
@@ -427,54 +471,146 @@ class StockAgentViewModel(application: Application) : AndroidViewModel(applicati
                                 }
                             }
                         } else {
-                            // Standard numeric checks
-                            // 1. Min Price Limit
-                            if (alert.minPrice != null && price <= alert.minPrice) {
-                                triggerAlertEvent(alert, "MIN_PRICE", price, "¡Alerta de Suelo alcanzado! ${alert.ticker} bajó a ${String.format("%.2f", price)} EUR/USD (Limite Min: ${alert.minPrice}).", quote)
-                                triggeredCount++
+                            // Standard/Custom numeric checks
+                            val conditionsStatus = mutableListOf<Boolean>()
+                            val conditionsDescriptions = mutableListOf<String>()
+
+                            if (alert.minPrice != null) {
+                                val met = price <= alert.minPrice
+                                conditionsStatus.add(met)
+                                if (met) {
+                                    conditionsDescriptions.add("Suelo alcanzado: precio (${String.format("%.2f", price)}) <= Min (${alert.minPrice})")
+                                }
                             }
-                            // 2. Max Price Limit
-                            if (alert.maxPrice != null && price >= alert.maxPrice) {
-                                triggerAlertEvent(alert, "MAX_PRICE", price, "¡Alerta de Techo superada! ${alert.ticker} subió a ${String.format("%.2f", price)} EUR/USD (Limite Max: ${alert.maxPrice}).", quote)
-                                triggeredCount++
+                            if (alert.maxPrice != null) {
+                                val met = price >= alert.maxPrice
+                                conditionsStatus.add(met)
+                                if (met) {
+                                    conditionsDescriptions.add("Techo superado: precio (${String.format("%.2f", price)}) >= Max (${alert.maxPrice})")
+                                }
                             }
-                            // 3. Minimum Volume indicator
-                            if (alert.minVolume != null && volume >= alert.minVolume) {
-                                triggerAlertEvent(alert, "VOLUME", volume.toDouble(), "¡Volumen Extraordinario! ${alert.ticker} negoció $volume acciones, por encima del mínimo de ${alert.minVolume}.", quote)
-                                triggeredCount++
+                            if (alert.minVolume != null) {
+                                val met = volume >= alert.minVolume
+                                conditionsStatus.add(met)
+                                if (met) {
+                                    conditionsDescriptions.add("Volumen de negocio mínimo: volumen actuales ($volume) >= Min (${alert.minVolume})")
+                                }
                             }
-                            // 4. Volatility Percent Change change
-                            if (alert.pctChange != null && Math.abs(pctChange) >= alert.pctChange) {
-                                triggerAlertEvent(alert, "PCT_CHANGE", pctChange, "¡Oscilación Brusca! El cambio diario de ${alert.ticker} es de ${String.format("%.2f", pctChange)}%, cruzando la variación límite de ${alert.pctChange}%.", quote)
-                                triggeredCount++
+                            if (alert.pctChange != null) {
+                                val met = Math.abs(pctChange) >= alert.pctChange
+                                conditionsStatus.add(met)
+                                if (met) {
+                                    conditionsDescriptions.add("Oscilación brusca: cambio diario (${String.format("%.2f", pctChange)}%) >= Límite (${alert.pctChange}%)")
+                                }
                             }
-                            // 5. Stop Loss
-                            if (alert.stopLoss != null && price <= alert.stopLoss) {
-                                triggerAlertEvent(alert, "STOP_LOSS", price, "🚨 ¡STOP LOSS ALCANZADO! El valor ${alert.ticker} cayó a ${String.format("%.2f", price)}, cruzando el umbral de pánico del SL fijado en ${alert.stopLoss}.", quote)
-                                triggeredCount++
+                            if (alert.stopLoss != null) {
+                                val met = price <= alert.stopLoss
+                                conditionsStatus.add(met)
+                                if (met) {
+                                    conditionsDescriptions.add("STOP LOSS perimetral: precio (${String.format("%.2f", price)}) <= SL (${alert.stopLoss})")
+                                }
                             }
-                            // 6. Take Profit 1
-                            if (alert.takeProfit != null && price >= alert.takeProfit) {
-                                triggerAlertEvent(alert, "TAKE_PROFIT", price, "💰 ¡TAKE PROFIT 1 CONFIRMADO! El valor ${alert.ticker} de ${alert.name} escaló a ${String.format("%.2f", price)}, activando el objetivo TP1 de ${alert.takeProfit}.", quote)
-                                triggeredCount++
+                            if (alert.takeProfit != null) {
+                                val met = price >= alert.takeProfit
+                                conditionsStatus.add(met)
+                                if (met) {
+                                    conditionsDescriptions.add("TAKE PROFIT 1 meta: precio (${String.format("%.2f", price)}) >= TP1 (${alert.takeProfit})")
+                                }
                             }
-                            // 6b. Take Profit 2
-                            if (alert.takeProfit2 != null && price >= alert.takeProfit2) {
-                                triggerAlertEvent(alert, "TAKE_PROFIT_2", price, "💰 ¡TAKE PROFIT 2 CONFIRMADO! El valor ${alert.ticker} de ${alert.name} escaló a ${String.format("%.2f", price)}, activando el objetivo TP2 de ${alert.takeProfit2}.", quote)
-                                triggeredCount++
+                            if (alert.takeProfit2 != null) {
+                                val met = price >= alert.takeProfit2
+                                conditionsStatus.add(met)
+                                if (met) {
+                                    conditionsDescriptions.add("TAKE PROFIT 2 meta: precio (${String.format("%.2f", price)}) >= TP2 (${alert.takeProfit2})")
+                                }
                             }
-                            // 6c. Horquilla de compra
-                            if (alert.minBuyPrice != null && alert.maxBuyPrice != null && price >= alert.minBuyPrice && price <= alert.maxBuyPrice) {
-                                triggerAlertEvent(alert, "BUY_MOMENTUM", price, "🎯 ¡EN HORQUILLA DE COMPRA! El activo ${alert.ticker} cotiza en ${String.format("%.2f", price)}, dentro del rango de entrada óptimo (${alert.minBuyPrice} - ${alert.maxBuyPrice}) sugerido por los analistas.", quote)
-                                triggeredCount++
+                            if (alert.minBuyPrice != null && alert.maxBuyPrice != null) {
+                                val met = price >= alert.minBuyPrice && price <= alert.maxBuyPrice
+                                conditionsStatus.add(met)
+                                if (met) {
+                                    conditionsDescriptions.add("Horquilla de compra: precio (${String.format("%.2f", price)}) está entre ${alert.minBuyPrice} y ${alert.maxBuyPrice}")
+                                }
                             }
-                            // 7. Trend Matches
-                            if (alert.alertTrend == "BULLISH" && isBullish) {
-                                triggerAlertEvent(alert, "TREND", price, "📈 ¿Tendencia Alcista Confirmada! Cotización de ${alert.ticker} a ${String.format("%.2f", price)} está en claro empuje comprador.", quote)
-                                triggeredCount++
-                            } else if (alert.alertTrend == "BEARISH" && isBearish) {
-                                triggerAlertEvent(alert, "TREND", price, "📉 ¿Tendencia Bajista Confirmada! Cotización de ${alert.ticker} a ${String.format("%.2f", price)} está sumergida en ciclo vendedor.", quote)
-                                triggeredCount++
+                            if (alert.alertTrend == "BULLISH" || alert.alertTrend == "BEARISH") {
+                                val met = if (alert.alertTrend == "BULLISH") isBullish else isBearish
+                                val trendLabel = if (alert.alertTrend == "BULLISH") "ALCISTA" else "BAJISTA"
+                                conditionsStatus.add(met)
+                                if (met) {
+                                    conditionsDescriptions.add("Gatillo tendencia coincide con: $trendLabel")
+                                }
+                            }
+                            if (alert.unusualVolumeMultiplier != null) {
+                                val met = volume >= (avgVolume * alert.unusualVolumeMultiplier)
+                                conditionsStatus.add(met)
+                                if (met) {
+                                    conditionsDescriptions.add("Volumen inusual detectado: volumen actual ($volume) >= ${String.format("%.0f", avgVolume * alert.unusualVolumeMultiplier)} (${alert.unusualVolumeMultiplier}x de la media de ${String.format("%.0f", avgVolume)})")
+                                }
+                            }
+
+                            if (alert.condLogicalOperator == "AND" || alert.condLogicalOperator == "OR") {
+                                val isAnd = alert.condLogicalOperator == "AND"
+                                val triggerFired = if (isAnd) {
+                                    conditionsStatus.size >= 2 && conditionsStatus.all { it }
+                                } else {
+                                    conditionsStatus.isNotEmpty() && conditionsStatus.any { it }
+                                }
+
+                                if (triggerFired) {
+                                    val metConditionsText = conditionsDescriptions.joinToString("\n- ")
+                                    val heading = if (isAnd) {
+                                        "🚨 ¡ALERTA CONDICIONAL CONJUNTA (AND) DISPARADA!"
+                                    } else {
+                                        "🎯 ¡ALERTA CONDICIONAL COMBINADA (OR) DISPARADA!"
+                                    }
+                                    val logMessage = "$heading\nEl activo ${alert.ticker} ha activado el conjunto condicional:\n- $metConditionsText"
+                                    triggerAlertEvent(alert, "CONDITIONAL", price, logMessage, quote)
+                                    triggeredCount++
+                                }
+                            } else {
+                                // Classic Independent evaluation
+                                if (alert.minPrice != null && price <= alert.minPrice) {
+                                    triggerAlertEvent(alert, "MIN_PRICE", price, "¡Alerta de Suelo alcanzado! ${alert.ticker} bajó a ${String.format("%.2f", price)} EUR/USD (Limite Min: ${alert.minPrice}).", quote)
+                                    triggeredCount++
+                                }
+                                if (alert.maxPrice != null && price >= alert.maxPrice) {
+                                    triggerAlertEvent(alert, "MAX_PRICE", price, "¡Alerta de Techo superada! ${alert.ticker} subió a ${String.format("%.2f", price)} EUR/USD (Limite Max: ${alert.maxPrice}).", quote)
+                                    triggeredCount++
+                                }
+                                if (alert.minVolume != null && volume >= alert.minVolume) {
+                                    triggerAlertEvent(alert, "VOLUME", volume.toDouble(), "¡Volumen Extraordinario! ${alert.ticker} negoció $volume acciones, por encima del mínimo de ${alert.minVolume}.", quote)
+                                    triggeredCount++
+                                }
+                                if (alert.pctChange != null && Math.abs(pctChange) >= alert.pctChange) {
+                                    triggerAlertEvent(alert, "PCT_CHANGE", pctChange, "¡Oscilación Brusca! El cambio diario de ${alert.ticker} es de ${String.format("%.2f", pctChange)}%, cruzando la variación límite de ${alert.pctChange}%.", quote)
+                                    triggeredCount++
+                                }
+                                if (alert.stopLoss != null && price <= alert.stopLoss) {
+                                    triggerAlertEvent(alert, "STOP_LOSS", price, "🚨 ¡STOP LOSS ALCANZADO! El valor ${alert.ticker} cayó a ${String.format("%.2f", price)}, cruzando el umbral de pánico del SL fijado en ${alert.stopLoss}.", quote)
+                                    triggeredCount++
+                                }
+                                if (alert.takeProfit != null && price >= alert.takeProfit) {
+                                    triggerAlertEvent(alert, "TAKE_PROFIT", price, "💰 ¡TAKE PROFIT 1 CONFIRMADO! El valor ${alert.ticker} de ${alert.name} escaló a ${String.format("%.2f", price)}, activando el objetivo TP1 de ${alert.takeProfit}.", quote)
+                                    triggeredCount++
+                                }
+                                if (alert.takeProfit2 != null && price >= alert.takeProfit2) {
+                                    triggerAlertEvent(alert, "TAKE_PROFIT_2", price, "💰 ¡TAKE PROFIT 2 CONFIRMADO! El valor ${alert.ticker} de ${alert.name} escaló a ${String.format("%.2f", price)}, activando el objetivo TP2 de ${alert.takeProfit2}.", quote)
+                                    triggeredCount++
+                                }
+                                if (alert.minBuyPrice != null && alert.maxBuyPrice != null && price >= alert.minBuyPrice && price <= alert.maxBuyPrice) {
+                                    triggerAlertEvent(alert, "BUY_MOMENTUM", price, "🎯 ¡EN HORQUILLA DE COMPRA! El activo ${alert.ticker} cotiza en ${String.format("%.2f", price)}, dentro del rango de entrada óptimo (${alert.minBuyPrice} - ${alert.maxBuyPrice}) sugerido por los analistas.", quote)
+                                    triggeredCount++
+                                }
+                                if (alert.alertTrend == "BULLISH" && isBullish) {
+                                    triggerAlertEvent(alert, "TREND", price, "📈 ¡Tendencia Alcista Confirmada! Cotización de ${alert.ticker} a ${String.format("%.2f", price)} está en claro empuje comprador.", quote)
+                                    triggeredCount++
+                                } else if (alert.alertTrend == "BEARISH" && isBearish) {
+                                    triggerAlertEvent(alert, "TREND", price, "📉 ¡Tendencia Bajista Confirmada! Cotización de ${alert.ticker} a ${String.format("%.2f", price)} está sumergida en ciclo vendedor.", quote)
+                                    triggeredCount++
+                                }
+                                if (alert.unusualVolumeMultiplier != null && volume >= (avgVolume * alert.unusualVolumeMultiplier)) {
+                                    triggerAlertEvent(alert, "UNUSUAL_VOLUME", volume.toDouble(), "⚠️ ¡VOLUMEN INUSUAL DETECTADO! El volumen de ${alert.ticker} de $volume ha superado el ${alert.unusualVolumeMultiplier}x de su media histórica de las últimas sesiones (${String.format("%.0f", avgVolume)}).", quote)
+                                    triggeredCount++
+                                }
                             }
                         }
 
@@ -643,6 +779,17 @@ class StockAgentViewModel(application: Application) : AndroidViewModel(applicati
                 withContext(Dispatchers.Main) {
                     _aiRecommendation.value = text ?: "Error: Respuesta de Gemini vacía."
                 }
+                if (!text.isNullOrBlank()) {
+                    val dateStr = java.text.SimpleDateFormat("dd/MM/yyyy HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
+                    repository.insertIaAnalysisHistory(
+                        IaAnalysisHistory(
+                            ticker = ticker,
+                            date = dateStr,
+                            price = price,
+                            adviceText = text
+                        )
+                    )
+                }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
                     _aiRecommendation.value = "Error al contactar al Agente de Análisis AI: ${e.localizedMessage}"
@@ -666,14 +813,38 @@ class StockAgentViewModel(application: Application) : AndroidViewModel(applicati
                     currentPrice = price,
                     volume = volume,
                     changePercent = changePercent,
-                    selectedTraders = _selectedTraders.value
+                    selectedTraders = _selectedTraders.value,
+                    aiProvider = _selectedAiProvider.value
                 )
                 _aiRecommendation.value = advice
+                if (!advice.isNullOrBlank() && !advice.startsWith("⚠️") && !advice.startsWith("Error")) {
+                    val dateStr = java.text.SimpleDateFormat("dd/MM/yyyy HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
+                    repository.insertIaAnalysisHistory(
+                        IaAnalysisHistory(
+                            ticker = ticker,
+                            date = dateStr,
+                            price = price,
+                            adviceText = advice
+                        )
+                    )
+                }
             } catch (e: Exception) {
                 _aiRecommendation.value = "Error al ejecutar la consultoría de trading: ${e.localizedMessage}"
             } finally {
                 _isAiRunning.value = false
             }
+        }
+    }
+
+    fun clearIaAnalysisHistory() {
+        viewModelScope.launch(Dispatchers.IO) {
+            repository.clearIaAnalysisHistory()
+        }
+    }
+
+    fun deleteIaAnalysisHistoryById(id: Int) {
+        viewModelScope.launch(Dispatchers.IO) {
+            repository.deleteIaAnalysisHistoryById(id)
         }
     }
 
@@ -710,7 +881,8 @@ class StockAgentViewModel(application: Application) : AndroidViewModel(applicati
     private suspend fun checkSentinelRulesWithGemini(
         alert: StockAlert,
         quote: StockRepository.QuoteDataPoint,
-        traders: Set<String>
+        traders: Set<String>,
+        aiProvider: String = "GEMINI"
     ): GeminiSentinelResult = withContext(Dispatchers.IO) {
         val apiKey = com.example.BuildConfig.GEMINI_API_KEY
         val prompt = """
@@ -735,6 +907,12 @@ class StockAgentViewModel(application: Application) : AndroidViewModel(applicati
               "reason": "Acción u evento que provocó el salto (ej. ¡Pánico! Cava detecta clímax y salta stop consolidado)",
               "detailedAdvice": "Explicación exhaustiva en español de por qué se disparó la alerta, qué condiciones de qué traders se cumplieron de forma fiel a sus personalidades, y qué plan táctico de compra/venta o protección recomiendan ejecutar ahora mismo."
             }
+            
+            ${when (aiProvider) {
+                "DEEPSEEK" -> "ATENCIÓN: Emite el análisis adoptando la personalidad técnica hiper-rigurosa y paso a paso de DeepSeek-R1. Prepara el 'detailedAdvice' con el prefijo explicitamente: '🤖 [Análisis Generado por DeepSeek-R1] '."
+                "KIMI" -> "ATENCIÓN: Emite el análisis adoptando la personalidad sumamente veloz, intuitiva y centrada en tendencias sectoriales rápidas de Kimi Chat. Prepara 'detailedAdvice' con el prefijo explicitamente: '🤖 [Análisis Generado por Kimi Chat] '."
+                else -> "ATENCIÓN: Emite el análisis adoptando la personalidad de Gemini 2.5 Flash de Google. Prepara el 'detailedAdvice' con el prefijo explicitamente: '🤖 [Análisis Generado por Gemini 2.5 Flash] '."
+            }}
         """.trimIndent()
 
         try {

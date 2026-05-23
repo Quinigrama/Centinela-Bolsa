@@ -28,6 +28,14 @@ interface GeminiApiService {
     ): GeminiContentResponse
 }
 
+interface OpenAiApiService {
+    @POST("v1/chat/completions")
+    suspend fun generateChatCompletion(
+        @Header("Authorization") authHeader: String,
+        @Body request: OpenAiChatRequest
+    ): OpenAiChatResponse
+}
+
 object RetrofitClient {
     private val moshi = Moshi.Builder()
         .addLast(KotlinJsonAdapterFactory())
@@ -46,7 +54,7 @@ object RetrofitClient {
         chain.proceed(request)
     }
 
-    private val okHttpClient = OkHttpClient.Builder()
+    private val yahooOkHttpClient = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
@@ -54,15 +62,41 @@ object RetrofitClient {
         .addInterceptor(loggingInterceptor)
         .build()
 
+    private val geminiOkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .writeTimeout(60, TimeUnit.SECONDS)
+        .addInterceptor(loggingInterceptor)
+        .build()
+
+    private val openAiOkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .writeTimeout(60, TimeUnit.SECONDS)
+        .addInterceptor(loggingInterceptor)
+        .build()
+
     private val yahooRetrofit = Retrofit.Builder()
         .baseUrl("https://query1.finance.yahoo.com/")
-        .client(okHttpClient)
+        .client(yahooOkHttpClient)
         .addConverterFactory(MoshiConverterFactory.create(moshi))
         .build()
 
     private val geminiRetrofit = Retrofit.Builder()
         .baseUrl("https://generativelanguage.googleapis.com/")
-        .client(okHttpClient)
+        .client(geminiOkHttpClient)
+        .addConverterFactory(MoshiConverterFactory.create(moshi))
+        .build()
+
+    private val deepseekRetrofit = Retrofit.Builder()
+        .baseUrl("https://api.deepseek.com/")
+        .client(openAiOkHttpClient)
+        .addConverterFactory(MoshiConverterFactory.create(moshi))
+        .build()
+
+    private val kimiRetrofit = Retrofit.Builder()
+        .baseUrl("https://api.moonshot.cn/")
+        .client(openAiOkHttpClient)
         .addConverterFactory(MoshiConverterFactory.create(moshi))
         .build()
 
@@ -74,25 +108,50 @@ object RetrofitClient {
         geminiRetrofit.create(GeminiApiService::class.java)
     }
 
+    val deepseekService: OpenAiApiService by lazy {
+        deepseekRetrofit.create(OpenAiApiService::class.java)
+    }
+
+    val kimiService: OpenAiApiService by lazy {
+        kimiRetrofit.create(OpenAiApiService::class.java)
+    }
+
     suspend fun generateContentSafe(
         model: String,
         apiKey: String,
         request: GeminiContentRequest
     ): GeminiContentResponse {
-        try {
-            return geminiService.generateContent(model, apiKey, request)
-        } catch (e: Exception) {
-            android.util.Log.e("RetrofitClient", "Gemini call failed with model $model: ${e.message}")
-            if (model == "gemini-3.5-flash") {
-                android.util.Log.w("RetrofitClient", "Attempting fallback to gemini-2.5-flash...")
-                try {
-                    return geminiService.generateContent("gemini-2.5-flash", apiKey, request)
-                } catch (inner: Exception) {
-                    android.util.Log.e("RetrofitClient", "Fallback to gemini-2.5-flash also failed: ${inner.message}")
-                    throw inner
-                }
+        val modelsToTry = mutableListOf<String>()
+        modelsToTry.add(model)
+        
+        val defaultModels = listOf(
+            "gemini-2.5-flash",
+            "gemini-1.5-flash",
+            "gemini-1.5-flash-8b",
+            "gemini-2.5-pro",
+            "gemini-1.5-pro",
+            "gemini-2.0-flash-exp",
+            "gemini-flash-latest",
+            "gemini-2.5-flash-latest"
+        )
+        for (m in defaultModels) {
+            if (m != model) {
+                modelsToTry.add(m)
             }
-            throw e
         }
+
+        var lastException: Exception? = null
+        for (candidate in modelsToTry) {
+            try {
+                if (candidate != model) {
+                    android.util.Log.w("RetrofitClient", "Attempting fallback to Gemini model: $candidate")
+                }
+                return geminiService.generateContent(candidate, apiKey, request)
+            } catch (e: Exception) {
+                android.util.Log.e("RetrofitClient", "Gemini call failed with model $candidate: ${e.message}")
+                lastException = e
+            }
+        }
+        throw lastException ?: Exception("All Gemini models in the fallback chain failed.")
     }
 }
