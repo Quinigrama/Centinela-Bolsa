@@ -14,7 +14,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.compose.animation.*
-import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -235,6 +235,7 @@ fun StockAgentMainScreen(
                 1 -> SetupAlertScreen(viewModel = viewModel)
                 2 -> HistoryScreen(viewModel = viewModel, historyLogs = allHistory, iaLogs = allIaHistory)
                 3 -> TechnicalAssistantScreen(viewModel = viewModel)
+                4 -> BacktestingScreen(viewModel = viewModel)
             }
         }
     }
@@ -372,7 +373,8 @@ fun TabSelector(selectedTab: Int, onTabSelected: (Int) -> Unit) {
             TabItem("Watchlist", Icons.Default.ShowChart),
             TabItem("Configurar", Icons.Default.AddAlert),
             TabItem("Historial", Icons.Default.Notifications),
-            TabItem("AI Coach", Icons.Default.Psychology)
+            TabItem("AI Coach", Icons.Default.Psychology),
+            TabItem("Backtesting", Icons.Default.Timeline)
         )
 
         tabs.forEachIndexed { idx, tab ->
@@ -763,6 +765,13 @@ fun DashboardScreen(viewModel: StockAgentViewModel, activeAlerts: List<StockAler
                         }
                     }
                 }
+            }
+        }
+
+        searchedQuote?.let { quote ->
+            item {
+                Spacer(modifier = Modifier.height(10.dp))
+                TradersDeskCard(quote = quote)
             }
         }
 
@@ -1569,8 +1578,8 @@ fun HistoryScreen(
     iaLogs: List<IaAnalysisHistory>
 ) {
     val context = LocalContext.current
+    val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
     var subTab by remember { mutableStateOf(0) } // 0 = Alertas, 1 = Informes IA
-    var selectedAlertReport by remember { mutableStateOf<AlertHistory?>(null) }
 
     Column(
         modifier = Modifier
@@ -1705,14 +1714,15 @@ fun HistoryScreen(
                     contentPadding = PaddingValues(bottom = 16.dp)
                 ) {
                     items(historyLogs) { h ->
+                        var isExpanded by remember { mutableStateOf(false) }
+                        val fullText = if (h.emailContent.isNotBlank()) "${h.message}\n\n${h.emailContent}" else h.message
+
                         Card(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { isExpanded = !isExpanded },
                             colors = CardDefaults.cardColors(containerColor = CardSlate),
-                            border = BorderStroke(1.dp, when (h.alertType) {
-                                "STOP_LOSS", "MIN_PRICE" -> CoralRed.copy(alpha = 0.5f)
-                                "TAKE_PROFIT", "MAX_PRICE" -> EmeraldGreen.copy(alpha = 0.5f)
-                                else -> BorderBlue
-                            }),
+                            border = BorderStroke(1.dp, if (isExpanded) EmeraldGreen.copy(alpha = 0.5f) else BorderBlue.copy(alpha = 0.3f)),
                             shape = RoundedCornerShape(10.dp)
                         ) {
                             Column(modifier = Modifier.padding(16.dp)) {
@@ -1741,7 +1751,7 @@ fun HistoryScreen(
                                         Spacer(modifier = Modifier.width(6.dp))
                                         Text(
                                             text = h.ticker,
-                                            fontSize = 16.sp,
+                                            fontSize = 15.sp,
                                             fontWeight = FontWeight.Bold,
                                             color = LightText
                                         )
@@ -1754,78 +1764,102 @@ fun HistoryScreen(
                                     )
                                 }
 
+                                Spacer(modifier = Modifier.height(10.dp))
+
+                                // Code styling from Consultas de IA
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .background(MidnightNavy, RoundedCornerShape(4.dp))
+                                        .padding(horizontal = 6.dp, vertical = 3.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(6.dp)
+                                            .background(
+                                                when (h.alertType) {
+                                                    "MIN_PRICE", "STOP_LOSS" -> CoralRed
+                                                    "MAX_PRICE", "TAKE_PROFIT" -> EmeraldGreen
+                                                    else -> AmberGold
+                                                },
+                                                RoundedCornerShape(3.dp)
+                                            )
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = "TIPO: ${h.alertType}",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = LightText
+                                    )
+                                }
+
                                 Spacer(modifier = Modifier.height(8.dp))
 
                                 Text(
-                                    text = h.message,
-                                    fontSize = 13.sp,
+                                    text = if (isExpanded) fullText else if (fullText.length > 160) fullText.take(160) + "..." else fullText,
+                                    fontSize = 12.sp,
                                     color = LightText,
-                                    lineHeight = 18.sp
+                                    lineHeight = 17.sp
                                 )
 
-                                Spacer(modifier = Modifier.height(12.dp))
+                                Spacer(modifier = Modifier.height(10.dp))
 
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Button(
-                                        onClick = {
-                                            selectedAlertReport = h
-                                        },
-                                        colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue),
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .height(44.dp)
-                                            .testTag("read_report_button_${h.id}"),
-                                        contentPadding = PaddingValues(horizontal = 8.dp),
-                                        shape = RoundedCornerShape(6.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Article,
-                                            contentDescription = "Leer Informe",
-                                            tint = MidnightNavy,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text(
-                                            text = "Leer",
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = MidnightNavy
-                                        )
-                                    }
+                                    Text(
+                                        text = if (isExpanded) "ocultar detalles 🔼" else "toca para expandir informe completo 🔽",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = ElectricBlue
+                                    )
 
-                                    OutlinedButton(
-                                        onClick = {
-                                            val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                                                type = "text/plain"
-                                                putExtra(Intent.EXTRA_SUBJECT, "Reporte Móvil Bolsa: ${h.ticker}")
-                                                putExtra(Intent.EXTRA_TEXT, h.emailContent)
-                                            }
-                                            context.startActivity(Intent.createChooser(shareIntent, "Compartir Reporte Bolsa..."))
-                                        },
-                                        border = BorderStroke(1.dp, BorderBlue),
-                                        modifier = Modifier
-                                            .weight(1.2f)
-                                            .height(44.dp)
-                                            .testTag("share_report_button_${h.id}"),
-                                        contentPadding = PaddingValues(horizontal = 8.dp),
-                                        shape = RoundedCornerShape(6.dp)
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Share,
-                                            contentDescription = "Compartir Reporte",
-                                            tint = ElectricBlue,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text(
-                                            text = "Compartir Reporte",
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = ElectricBlue
-                                        )
+                                        // Copy Icon Button
+                                        IconButton(
+                                            onClick = {
+                                                clipboardManager.setText(AnnotatedString(fullText))
+                                                Toast.makeText(context, "📋 ¡Informe de alerta copiado al portapapeles!", Toast.LENGTH_SHORT).show()
+                                            },
+                                            modifier = Modifier
+                                                .size(32.dp)
+                                                .background(BorderBlue.copy(alpha = 0.3f), RoundedCornerShape(6.dp))
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.ContentCopy,
+                                                contentDescription = "Copiar",
+                                                tint = ElectricBlue,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                        }
+
+                                        // Share Icon Button
+                                        IconButton(
+                                            onClick = {
+                                                val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                                    type = "text/plain"
+                                                    putExtra(Intent.EXTRA_SUBJECT, "Reporte Móvil Bolsa: ${h.ticker}")
+                                                    putExtra(Intent.EXTRA_TEXT, fullText)
+                                                }
+                                                context.startActivity(Intent.createChooser(shareIntent, "Compartir Reporte Bolsa..."))
+                                            },
+                                            modifier = Modifier
+                                                .size(32.dp)
+                                                .background(BorderBlue.copy(alpha = 0.3f), RoundedCornerShape(6.dp))
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Share,
+                                                contentDescription = "Compartir",
+                                                tint = ElectricBlue,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -1936,12 +1970,19 @@ fun HistoryScreen(
                                 Spacer(modifier = Modifier.height(10.dp))
 
                                 val lineList = log.adviceText.split("\n")
-                                val verdictLine = lineList.find { it.contains("RECOMENDACIÓN:") || it.contains("VEREDICTO_MESA:") } ?: ""
+                                val verdictLine = lineList.find { it.contains("RECOMENDACIÓN:") || it.contains("VEREDICTO_MESA:") || it.contains("VEREDICTO:") || it.contains("CONSENSO:") } ?: ""
                                 val cleanestVerdict = when {
-                                    verdictLine.isNotBlank() -> verdictLine.replace("VEREDICTO_MESA:", "").trim()
-                                    log.adviceText.contains("COMPRAR") -> "CONSENSO: COMPRAR"
-                                    log.adviceText.contains("VENDER") -> "CONSENSO: VENDER"
-                                    else -> "CONSENSO: ESPERAR"
+                                    verdictLine.isNotBlank() -> {
+                                        verdictLine.replace("VEREDICTO_MESA:", "")
+                                                  .replace("VEREDICTO:", "")
+                                                  .replace("RECOMENDACIÓN:", "")
+                                                  .replace("CONSENSO:", "")
+                                                  .trim()
+                                    }
+                                    log.adviceText.uppercase().contains("VEREDICTO_MESA: COMPRAR") -> "COMPRAR"
+                                    log.adviceText.uppercase().contains("VEREDICTO_MESA: VENDER") -> "VENDER"
+                                    log.adviceText.uppercase().contains("VEREDICTO_MESA: ESPERAR") -> "ESPERAR"
+                                    else -> "ESPERAR"
                                 }
 
                                 Row(
@@ -1955,8 +1996,8 @@ fun HistoryScreen(
                                             .size(6.dp)
                                             .background(
                                                 when {
-                                                    cleanestVerdict.contains("COMPRA") || cleanestVerdict.contains("COMPRAR") -> EmeraldGreen
-                                                    cleanestVerdict.contains("VENTA") || cleanestVerdict.contains("VENDER") -> CoralRed
+                                                    cleanestVerdict.uppercase().contains("COMPRA") || cleanestVerdict.uppercase().contains("COMPRAR") -> EmeraldGreen
+                                                    cleanestVerdict.uppercase().contains("VENTA") || cleanestVerdict.uppercase().contains("VENDER") -> CoralRed
                                                     else -> AmberGold
                                                 },
                                                 RoundedCornerShape(3.dp)
@@ -1972,6 +2013,16 @@ fun HistoryScreen(
                                 }
 
                                 Spacer(modifier = Modifier.height(8.dp))
+
+                                if (isExpanded) {
+                                    val logVerdict = when {
+                                        cleanestVerdict.uppercase().contains("COMPRA") || cleanestVerdict.uppercase().contains("COMPRAR") || cleanestVerdict.uppercase().contains("ENTRAR") -> "COMPRAR"
+                                        cleanestVerdict.uppercase().contains("VENTA") || cleanestVerdict.uppercase().contains("VENDER") || cleanestVerdict.uppercase().contains("NO ENTRAR") || cleanestVerdict.uppercase().contains("EVITAR") -> "VENDER"
+                                        else -> "ESPERAR"
+                                    }
+                                    ConsensusDialGauge(verdict = logVerdict)
+                                    Spacer(modifier = Modifier.height(10.dp))
+                                }
 
                                 Text(
                                     text = if (isExpanded) log.adviceText else if (log.adviceText.length > 160) log.adviceText.take(160) + "..." else log.adviceText,
@@ -1994,25 +2045,49 @@ fun HistoryScreen(
                                         color = ElectricBlue
                                     )
 
-                                    IconButton(
-                                        onClick = {
-                                            val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                                                type = "text/plain"
-                                                putExtra(Intent.EXTRA_SUBJECT, "Mesa de Asesores de Bolsa AI: ${log.ticker}")
-                                                putExtra(Intent.EXTRA_TEXT, log.adviceText)
-                                            }
-                                            context.startActivity(Intent.createChooser(shareIntent, "Compartir Consulta Bolsa..."))
-                                        },
-                                        modifier = Modifier
-                                            .size(32.dp)
-                                            .background(BorderBlue.copy(alpha = 0.3f), RoundedCornerShape(6.dp))
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Share,
-                                            contentDescription = "Compartir",
-                                            tint = ElectricBlue,
-                                            modifier = Modifier.size(14.dp)
-                                        )
+                                        // Copy Icon Button
+                                        IconButton(
+                                            onClick = {
+                                                clipboardManager.setText(AnnotatedString(log.adviceText))
+                                                Toast.makeText(context, "📋 ¡Informe copiado al portapapeles!", Toast.LENGTH_SHORT).show()
+                                            },
+                                            modifier = Modifier
+                                                .size(32.dp)
+                                                .background(BorderBlue.copy(alpha = 0.3f), RoundedCornerShape(6.dp))
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.ContentCopy,
+                                                contentDescription = "Copiar",
+                                                tint = ElectricBlue,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                        }
+
+                                        // Share Icon Button
+                                        IconButton(
+                                            onClick = {
+                                                val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                                    type = "text/plain"
+                                                    putExtra(Intent.EXTRA_SUBJECT, "Mesa de Asesores de Bolsa AI: ${log.ticker}")
+                                                    putExtra(Intent.EXTRA_TEXT, log.adviceText)
+                                                }
+                                                context.startActivity(Intent.createChooser(shareIntent, "Compartir Consulta Bolsa..."))
+                                            },
+                                            modifier = Modifier
+                                                .size(32.dp)
+                                                .background(BorderBlue.copy(alpha = 0.3f), RoundedCornerShape(6.dp))
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Share,
+                                                contentDescription = "Compartir",
+                                                tint = ElectricBlue,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -2020,89 +2095,6 @@ fun HistoryScreen(
                     }
                 }
             }
-        }
-
-        selectedAlertReport?.let { report ->
-            androidx.compose.material3.AlertDialog(
-                onDismissRequest = { selectedAlertReport = null },
-                confirmButton = {
-                    TextButton(onClick = { selectedAlertReport = null }) {
-                        Text("Cerrar", color = ElectricBlue, fontWeight = FontWeight.Bold)
-                    }
-                },
-                title = {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Article,
-                            contentDescription = null,
-                            tint = EmeraldGreen,
-                            modifier = Modifier.size(24.dp)
-                        )
-                        Column {
-                            Text(
-                                text = "Informe de Alerta: ${report.ticker}",
-                                fontSize = 18.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = LightText
-                            )
-                            Text(
-                                text = "Disparado el ${SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault()).format(Date(report.timestamp))}",
-                                fontSize = 11.sp,
-                                color = GrayText
-                            )
-                        }
-                    }
-                },
-                text = {
-                    val reportScroll = rememberScrollState()
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 350.dp)
-                            .verticalScroll(reportScroll)
-                            .padding(vertical = 8.dp)
-                    ) {
-                        Text(
-                            text = "Condición de Salto:",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 12.sp,
-                            color = GrayText
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = report.message,
-                            fontSize = 13.sp,
-                            color = LightText,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Divider(color = BorderBlue.copy(alpha = 0.5f))
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text(
-                            text = "Análisis Detallado de la Mesa de Asesores:",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 12.sp,
-                            color = GrayText
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = report.emailContent.ifBlank { "No se generó informe detallado para esta alerta de precio rápida." },
-                            fontSize = 12.sp,
-                            color = LightText,
-                            lineHeight = 18.sp
-                        )
-                    }
-                },
-                containerColor = MidnightNavy,
-                titleContentColor = LightText,
-                textContentColor = LightText,
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.border(1.dp, BorderBlue, RoundedCornerShape(12.dp))
-            )
         }
     }
 }
@@ -2507,18 +2499,20 @@ fun TechnicalAssistantScreen(viewModel: StockAgentViewModel) {
                 // Smart consensus detection from the advisory text
                 val upperAdvice = currentText.uppercase()
                 
-                // 1. Check for standard machine token from repository
+                // 1. Check for standard machine token from repository (extremely robust against markdown asterisks e.g. **VEREDICTO_MESA:**)
                 var detectedBuy = false
                 var detectedSell = false
                 var detectedWait = false
 
-                if (upperAdvice.contains("VEREDICTO_MESA:")) {
-                    val verdictSection = upperAdvice.substringAfter("VEREDICTO_MESA:")
-                    if (verdictSection.contains("COMPRAR") || verdictSection.contains("COMPRA")) {
+                val rawCleanVal = currentText.uppercase().replace("*", "").replace("_", "")
+                if (rawCleanVal.contains("VEREDICTO_MESA")) {
+                    val idx = rawCleanVal.indexOf("VEREDICTO_MESA")
+                    val sub = rawCleanVal.substring(idx, (idx + 60).coerceAtMost(rawCleanVal.length))
+                    if (sub.contains("COMPRAR") || sub.contains("COMPRA")) {
                         detectedBuy = true
-                    } else if (verdictSection.contains("VENDER") || verdictSection.contains("VENTA")) {
+                    } else if (sub.contains("VENDER") || sub.contains("VENTA")) {
                         detectedSell = true
-                    } else if (verdictSection.contains("ESPERAR") || verdictSection.contains("MANTENER")) {
+                    } else if (sub.contains("ESPERAR") || sub.contains("MANTENER") || sub.contains("OBSERVAR")) {
                         detectedWait = true
                     }
                 }
@@ -2574,9 +2568,15 @@ fun TechnicalAssistantScreen(viewModel: StockAgentViewModel) {
                         val sellKeywords = listOf("VENTA", "VENDER", "NO ENTRAR", "EVITAR", "NO OPERAR", "SHORT", "BEARISH")
                         val waitKeywords = listOf("ESPERAR", "MANTENER", "OBSERVAR", "NEUTRO")
 
-                        val buyCount = buyKeywords.sumOf { k -> consensusText.split(k).size - 1 }
-                        val sellCount = sellKeywords.sumOf { k -> consensusText.split(k).size - 1 }
-                        val waitCount = waitKeywords.sumOf { k -> consensusText.split(k).size - 1 }
+                        val cleanedConsensusText = consensusText
+                            .replace("VALOR_COMPRA_MIN", "")
+                            .replace("VALOR_COMPRA_MAX", "")
+                            .replace("VALOR_STOP_LOSS", "")
+                            .replace("VALOR_TAKE_PROFIT", "")
+
+                        val buyCount = buyKeywords.sumOf { k -> cleanedConsensusText.split(k).size - 1 }
+                        val sellCount = sellKeywords.sumOf { k -> cleanedConsensusText.split(k).size - 1 }
+                        val waitCount = waitKeywords.sumOf { k -> cleanedConsensusText.split(k).size - 1 }
 
                         if (buyCount > sellCount && buyCount > waitCount) {
                             detectedBuy = true
@@ -2695,6 +2695,18 @@ fun TechnicalAssistantScreen(viewModel: StockAgentViewModel) {
                         }
 
                         Spacer(modifier = Modifier.height(12.dp))
+
+                        val verdictString = if (isBuy && !isSell) "COMPRAR" else if (isSell) "VENDER" else "ESPERAR"
+
+                        // Beautiful Custom Dial/Needle Gauge Indicator!!
+                        ConsensusDialGauge(verdict = verdictString)
+
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        // Smart Multi Horizon Suitability Grid
+                        MultiHorizonSuitabilityGrid(quote = quote)
+
+                        Spacer(modifier = Modifier.height(16.dp))
 
                         // Semaphoric state dashboard: Buy/Hold/Sell
                         Row(
@@ -2961,3 +2973,1508 @@ fun sendEmailIntent(context: Context, subject: String, body: String) {
         Toast.makeText(context, "No se encontró cliente de correo electrónico.", Toast.LENGTH_SHORT).show()
     }
 }
+
+@Composable
+fun TradersDeskCard(quote: StockRepository.QuoteDataPoint) {
+    var subTabSelected by remember { mutableStateOf(0) } // 0 = Métricas, 1 = Calculadora
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = CardSlate),
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, BorderBlue)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            // Header row with Icon
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.ShowChart,
+                    contentDescription = "Mesa de Operaciones de los Traders",
+                    tint = ElectricBlue,
+                    modifier = Modifier.size(22.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Mesa de Operaciones del Trader",
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = LightText
+                )
+            }
+
+            // Sub-tabs segment switcher (styled nicely like a material 3 custom button group)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(MidnightNavy)
+                    .border(1.dp, BorderBlue, RoundedCornerShape(8.dp))
+                    .padding(2.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                listOf(
+                    Pair("⚡ Métricas de los Expertos", 0),
+                    Pair("🎯 Calculadora de Riesgo R/R", 1)
+                ).forEach { (title, index) ->
+                    val isSelected = subTabSelected == index
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(if (isSelected) ElectricBlue else Color.Transparent)
+                            .clickable { subTabSelected = index }
+                            .padding(vertical = 10.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = title,
+                            fontSize = 11.5.sp,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                            color = if (isSelected) MidnightNavy else LightText
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            if (subTabSelected == 0) {
+                // Métricas: Cava & Gil & Ortega
+                Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    // 1. Cava's Volume Climax
+                    val avgVolume = if (quote.volumesHistory.isNotEmpty()) quote.volumesHistory.average() else quote.volume.toDouble()
+                    val volMultiplier = if (avgVolume != 0.0) quote.volume / avgVolume else 1.0
+                    val isClimax = volMultiplier >= 1.5
+
+                    Column {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(text = "Volumen Clímax (José Luis Cava)", fontSize = 11.5.sp, color = GrayText, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                    text = String.format(Locale.ROOT, "x%.2f del promedio", volMultiplier),
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (isClimax) AmberGold else EmeraldGreen
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(MidnightNavy, RoundedCornerShape(6.dp))
+                                .border(1.dp, if (isClimax) AmberGold.copy(alpha = 0.5f) else BorderBlue, RoundedCornerShape(6.dp))
+                                .padding(10.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(text = if (isClimax) "⚠️" else "✅", fontSize = 14.sp)
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = if (isClimax) "¡VOLUMEN CLÍMAX DETECTADO! Gran volumen de negociación repentino. Cava advierte posible clímax de acumulación o distribución institucional."
+                                           else "Volumen de negociación dentro del rango promedio normal. Sin signos de manipulación masiva ni acumulación clímax.",
+                                    fontSize = 11.sp,
+                                    color = if (isClimax) AmberGold else LightText,
+                                    lineHeight = 15.sp
+                                )
+                            }
+                        }
+                    }
+
+                    // 2. Cava's 5d RSI
+                    val rsi = calculateRsi5(quote.pricesHistory)
+                    val rsiColor = when {
+                        rsi >= 70.0 -> CoralRed
+                        rsi <= 30.0 -> EmeraldGreen
+                        else -> ElectricBlue
+                    }
+                    val rsiLabel = when {
+                        rsi >= 70.0 -> "Sobrecompra Crítica (Zona de Distribución)"
+                        rsi <= 30.0 -> "Sobrevendido (Zona de Acumulación)"
+                        else -> "Zona Neutral de Consolidación"
+                    }
+
+                    Column {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(text = "RSI de Fuerza Relativa (RSI-5d)", fontSize = 11.5.sp, color = GrayText, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                text = String.format(Locale.ROOT, "%.1f", rsi),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = rsiColor
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        
+                        // Linear progress slider for RSI
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(8.dp)
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(MidnightNavy)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxHeight()
+                                    .fillMaxWidth((rsi / 100.0).toFloat().coerceIn(0f, 1f))
+                                    .background(rsiColor)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "RSI actual: $rsiLabel. ${if (rsi <= 30.0) "Cava y Gil buscarían validación de soporte para cortos o entrada en largos." else if (rsi >= 70) "Cava buscaría protección y stop ceñido para evitar correcciones." else "Timing de consolidación de tendencia."}",
+                            fontSize = 11.sp,
+                            color = GrayText,
+                            lineHeight = 15.sp
+                        )
+                    }
+
+                    // 3. Timing / EMA-5d timing de Alexis Ortega
+                    val avgPrice = if (quote.pricesHistory.isNotEmpty()) quote.pricesHistory.average() else quote.price
+                    val isAboveAverage = quote.price >= avgPrice
+
+                    Column {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(text = "Timing & Promedio (Alexis Ortega)", fontSize = 11.5.sp, color = GrayText, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                text = if (isAboveAverage) "Luz Verde (Alcista)" else "Luz Roja (Agotamiento)",
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (isAboveAverage) EmeraldGreen else CoralRed
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(MidnightNavy, RoundedCornerShape(6.dp))
+                                .border(1.dp, BorderBlue, RoundedCornerShape(6.dp))
+                                .padding(10.dp)
+                        ) {
+                            Text(
+                                text = if (isAboveAverage) "📈 El precio de la acción está por encima del promedio de 5 días (${String.format(Locale.ROOT, "%.2f", avgPrice)}). Timing compatible con flujos macro alcistas y fortaleza semanal."
+                                       else "📉 El precio está actualmente por debajo del promedio de 5 días (${String.format(Locale.ROOT, "%.2f", avgPrice)}). Alexis Ortega aconseja máxima cautela: los flujos semanales están corrigiendo.",
+                                fontSize = 11.sp,
+                                color = LightText,
+                                lineHeight = 15.sp
+                            )
+                        }
+                    }
+
+                    // 4. Fibonacci Retracement Levels de Pablo Gil
+                    val minPrice = quote.pricesHistory.minOrNull() ?: quote.price
+                    val maxPrice = quote.pricesHistory.maxOrNull() ?: quote.price
+                    val fibRange = maxPrice - minPrice
+                    val fibLevels = if (fibRange > 0.0) {
+                        listOf(
+                            Pair("Fib 23.6%", maxPrice - (0.236 * fibRange)),
+                            Pair("Fib 38.2%", maxPrice - (0.382 * fibRange)),
+                            Pair("Fib 50.0% (Pivote)", maxPrice - (0.500 * fibRange)),
+                            Pair("Fib 61.8% (Soporte Algorítmico)", maxPrice - (0.618 * fibRange))
+                        )
+                    } else {
+                        emptyList()
+                    }
+
+                    if (fibLevels.isNotEmpty()) {
+                        Column {
+                            Text(text = "Niveles de Retroceso Fibonacci (Pablo Gil)", fontSize = 11.5.sp, color = GrayText, fontWeight = FontWeight.SemiBold)
+                            Spacer(modifier = Modifier.height(6.dp))
+                            
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(MidnightNavy, RoundedCornerShape(8.dp))
+                                    .border(1.dp, BorderBlue, RoundedCornerShape(8.dp))
+                                    .padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                fibLevels.forEach { (label, value) ->
+                                    val isPriceNear = Math.abs(quote.price - value) / value <= 0.015
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(6.dp)
+                                                    .background(if (isPriceNear) ElectricBlue else GrayText.copy(alpha = 0.5f), RoundedCornerShape(3.dp))
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                text = label,
+                                                fontSize = 11.sp,
+                                                fontWeight = if (isPriceNear) FontWeight.Bold else FontWeight.Medium,
+                                                color = if (isPriceNear) ElectricBlue else LightText
+                                            )
+                                        }
+                                        Text(
+                                            text = String.format(Locale.ROOT, "%.2f", value),
+                                            fontSize = 11.sp,
+                                            fontWeight = if (isPriceNear) FontWeight.Bold else FontWeight.SemiBold,
+                                            color = if (isPriceNear) ElectricBlue else LightText
+                                        )
+                                    }
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "💡 Tip de Pablo Gil: Los retrocesos Fibonacci sirven para identificar con precisión dónde están esperando las grandes manos institucionales para entrar en soporte.",
+                                fontSize = 10.sp,
+                                color = GrayText,
+                                lineHeight = 13.sp
+                            )
+                        }
+                    }
+                }
+            } else {
+                // Calculadora de Riesgo R/R de Gil & Lasvignes
+                var entryText by remember(quote.ticker) { mutableStateOf(String.format(Locale.ROOT, "%.2f", quote.price)) }
+                var slText by remember(quote.ticker) { mutableStateOf(String.format(Locale.ROOT, "%.2f", quote.price * 0.95)) }
+                var tpText by remember(quote.ticker) { mutableStateOf(String.format(Locale.ROOT, "%.2f", quote.price * 1.10)) }
+
+                val entryVal = entryText.toDoubleOrNull() ?: 1.0
+                val slVal = slText.toDoubleOrNull() ?: 0.95
+                val tpVal = tpText.toDoubleOrNull() ?: 1.10
+
+                val riskAmount = entryVal - slVal
+                val rewardAmount = tpVal - entryVal
+                val riskPct = if (entryVal != 0.0) (riskAmount / entryVal) * 100.0 else 0.0
+                val rewardPct = if (entryVal != 0.0) (rewardAmount / entryVal) * 100.0 else 0.0
+                val rrRatio = if (riskAmount != 0.0) rewardAmount / riskAmount else 0.0
+                val isRrValid = rrRatio >= 2.0
+
+                Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Text(
+                        text = "Calcula el ratio de tu operativa antes de entrar al mercado para verificar la disciplina matemática de los traders de élite.",
+                        fontSize = 11.sp,
+                        color = GrayText,
+                        lineHeight = 15.sp
+                    )
+
+                    // 1. Inputs row
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = entryText,
+                            onValueChange = { entryText = it },
+                            label = { Text("Entrada", fontSize = 9.sp, color = GrayText) },
+                            textStyle = LocalTextStyle.current.copy(color = Color.White, fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold),
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = ElectricBlue,
+                                unfocusedBorderColor = BorderBlue,
+                                focusedContainerColor = MidnightNavy,
+                                unfocusedContainerColor = MidnightNavy
+                            )
+                        )
+                        OutlinedTextField(
+                            value = slText,
+                            onValueChange = { slText = it },
+                            label = { Text("Stop Loss", fontSize = 9.sp, color = GrayText) },
+                            textStyle = LocalTextStyle.current.copy(color = Color.White, fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold),
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = ElectricBlue,
+                                unfocusedBorderColor = BorderBlue,
+                                focusedContainerColor = MidnightNavy,
+                                unfocusedContainerColor = MidnightNavy
+                            )
+                        )
+                        OutlinedTextField(
+                            value = tpText,
+                            onValueChange = { tpText = it },
+                            label = { Text("Take Profit", fontSize = 9.sp, color = GrayText) },
+                            textStyle = LocalTextStyle.current.copy(color = Color.White, fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold),
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = ElectricBlue,
+                                unfocusedBorderColor = BorderBlue,
+                                focusedContainerColor = MidnightNavy,
+                                unfocusedContainerColor = MidnightNavy
+                            )
+                        )
+                    }
+
+                    // 2. Calculated analytics cards
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Card(
+                            modifier = Modifier.weight(1f),
+                            colors = CardDefaults.cardColors(containerColor = MidnightNavy),
+                            border = BorderStroke(1.dp, BorderBlue)
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(text = "Riesgo Asumido", fontSize = 10.sp, color = GrayText)
+                                Text(
+                                    text = String.format(Locale.ROOT, "%.2f%%", riskPct),
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = CoralRed
+                                )
+                            }
+                        }
+                        Card(
+                            modifier = Modifier.weight(1f),
+                            colors = CardDefaults.cardColors(containerColor = MidnightNavy),
+                            border = BorderStroke(1.dp, BorderBlue)
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(text = "Retorno Estimado", fontSize = 10.sp, color = GrayText)
+                                Text(
+                                    text = String.format(Locale.ROOT, "%.2f%%", rewardPct),
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = EmeraldGreen
+                                )
+                            }
+                        }
+                    }
+
+                    // 3. Pablo Gil's evaluation card
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MidnightNavy),
+                        border = BorderStroke(1.2.dp, if (isRrValid) EmeraldGreen else AmberGold)
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = if (isRrValid) Icons.Default.DoneAll else Icons.Default.Warning,
+                                    contentDescription = "Evaluacion Gil",
+                                    tint = if (isRrValid) EmeraldGreen else AmberGold,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = String.format(Locale.ROOT, "Ratio Beneficio/Riesgo = 1 : %.2f", rrRatio),
+                                    fontSize = 12.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isRrValid) EmeraldGreen else AmberGold
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = if (isRrValid) "✅ Cumple el estándar de Pablo Gil: El ratio de la operación es óptimo (mayor de 1:2). Tienes las matemáticas de tu parte."
+                                       else "⚠️ Alerta de Disciplina Gil: El ratio R/R es inferior a 1:2. Estás asumiendo demasiada pérdida en comparación con la recompensa.",
+                                fontSize = 11.sp,
+                                color = LightText,
+                                lineHeight = 15.sp
+                            )
+                        }
+                    }
+
+                    // 4. Lasvignes' trade plan
+                    val tp1Partial = entryVal + riskAmount
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MidnightNavy),
+                        border = BorderStroke(1.dp, BorderBlue)
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Text(
+                                text = "🛡️ Plan 'Compra a Cero' de Carlos Lasvignes",
+                                fontSize = 11.5.sp,
+                                color = ElectricBlue,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "1. Objetivo Parcial (TP1): Al llegar el precio a ${String.format(Locale.ROOT, "%.2f", tp1Partial)}, liquida automáticamente el 50% de tu posición.\n" +
+                                       "2. Ajuste de Protección: En ese preciso instante, sube el Stop Loss de las acciones restantes a tu precio de entrada inicial (${String.format(Locale.ROOT, "%.2f", entryVal)}).\n" +
+                                       "3. Resultado: Tu riesgo financiero se reduce automáticamente a cero. ¡Operas con tranquilidad institucional!",
+                                fontSize = 11.sp,
+                                color = LightText,
+                                lineHeight = 15.sp
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// --- GAUGE NEEDLE DIAL COMPOSABLE ---
+@Composable
+fun ConsensusDialGauge(verdict: String, modifier: Modifier = Modifier) {
+    val targetAngle = when (verdict) {
+        "VENDER" -> 30f // Left slice
+        "ESPERAR" -> 90f // Center slice
+        "COMPRAR" -> 150f // Right slice
+        else -> 90f
+    }
+    
+    val animatedAngle by animateFloatAsState(
+        targetValue = targetAngle,
+        animationSpec = spring(
+            dampingRatio = 0.55f, 
+            stiffness = Spring.StiffnessLow
+        ),
+        label = "NeedleAngle"
+    )
+
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = 12.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(width = 240.dp, height = 130.dp),
+            contentAlignment = Alignment.BottomCenter
+        ) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val width = size.width
+                val height = size.height
+                val center = Offset(width / 2f, height - 10f)
+                val radius = width / 2.3f
+                
+                val strokeWidth = 16.dp.toPx()
+                
+                // Red segment (Vender): 180 to 240
+                drawArc(
+                    color = CoralRed.copy(alpha = 0.2f),
+                    startAngle = 180f,
+                    sweepAngle = 60f,
+                    useCenter = false,
+                    style = Stroke(width = strokeWidth, cap = StrokeCap.Round),
+                    size = Size(radius * 2f, radius * 2f),
+                    topLeft = Offset(center.x - radius, center.y - radius)
+                )
+                // Yellow segment (Esperar): 240 to 300
+                drawArc(
+                    color = AmberGold.copy(alpha = 0.2f),
+                    startAngle = 240f,
+                    sweepAngle = 60f,
+                    useCenter = false,
+                    style = Stroke(width = strokeWidth),
+                    size = Size(radius * 2f, radius * 2f),
+                    topLeft = Offset(center.x - radius, center.y - radius)
+                )
+                // Green segment (Comprar): 300 to 360
+                drawArc(
+                    color = EmeraldGreen.copy(alpha = 0.2f),
+                    startAngle = 300f,
+                    sweepAngle = 60f,
+                    useCenter = false,
+                    style = Stroke(width = strokeWidth, cap = StrokeCap.Round),
+                    size = Size(radius * 2f, radius * 2f),
+                    topLeft = Offset(center.x - radius, center.y - radius)
+                )
+                
+                // Active highlight zone
+                when (verdict) {
+                    "VENDER" -> {
+                        drawArc(
+                            color = CoralRed,
+                            startAngle = 180f,
+                            sweepAngle = 60f,
+                            useCenter = false,
+                            style = Stroke(width = strokeWidth + 4.dp.toPx(), cap = StrokeCap.Round),
+                            size = Size(radius * 2f, radius * 2f),
+                            topLeft = Offset(center.x - radius, center.y - radius)
+                        )
+                    }
+                    "ESPERAR" -> {
+                        drawArc(
+                            color = AmberGold,
+                            startAngle = 240f,
+                            sweepAngle = 60f,
+                            useCenter = false,
+                            style = Stroke(width = strokeWidth + 4.dp.toPx()),
+                            size = Size(radius * 2f, radius * 2f),
+                            topLeft = Offset(center.x - radius, center.y - radius)
+                        )
+                    }
+                    "COMPRAR" -> {
+                        drawArc(
+                            color = EmeraldGreen,
+                            startAngle = 300f,
+                            sweepAngle = 60f,
+                            useCenter = false,
+                            style = Stroke(width = strokeWidth + 4.dp.toPx(), cap = StrokeCap.Round),
+                            size = Size(radius * 2f, radius * 2f),
+                            topLeft = Offset(center.x - radius, center.y - radius)
+                        )
+                    }
+                }
+
+                val absoluteAngle = 180f + animatedAngle
+                val rad = Math.toRadians(absoluteAngle.toDouble())
+                val needleLength = radius * 0.88f
+                
+                val needleEnd = Offset(
+                    (center.x + needleLength * Math.cos(rad)).toFloat(),
+                    (center.y + needleLength * Math.sin(rad)).toFloat()
+                )
+                
+                // Shadow for premium look
+                drawLine(
+                    color = Color.Black.copy(alpha = 0.6f),
+                    start = center + Offset(3f, 3f),
+                    end = needleEnd + Offset(3f, 3f),
+                    strokeWidth = 4.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+
+                // High-contrast, glowing ElectricBlue needle
+                drawLine(
+                    color = ElectricBlue,
+                    start = center,
+                    end = needleEnd,
+                    strokeWidth = 3.2.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+                
+                // Needle center cap
+                drawCircle(
+                    color = MidnightNavy,
+                    radius = 10.dp.toPx(),
+                    center = center
+                )
+                drawCircle(
+                    color = ElectricBlue,
+                    radius = 6.dp.toPx(),
+                    center = center
+                )
+            }
+        }
+        
+        Spacer(modifier = Modifier.height(6.dp))
+        
+        // Horizontal descriptive tags below gauge
+        Row(
+            modifier = Modifier.width(240.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("VENDER", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = CoralRed)
+            Text("ESPERAR", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = AmberGold)
+            Text("COMPRAR", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = EmeraldGreen)
+        }
+    }
+}
+
+// --- MULTI HORIZON SUITABILITY COMPOSABLE ---
+@Composable
+fun MultiHorizonSuitabilityGrid(quote: StockRepository.QuoteDataPoint) {
+    val absChange = Math.abs(quote.changePercent)
+    val rsi = calculateRsi5(quote.pricesHistory)
+    val avgPrice = if (quote.pricesHistory.isNotEmpty()) quote.pricesHistory.average() else quote.price
+    val isAboveAverage = quote.price >= avgPrice
+
+    // 1. Scalping (Minutes to hours)
+    val scalpLevel = when {
+        absChange >= 1.4 -> "ÓPTIMO (Alta Volatilidad)"
+        absChange >= 0.6 -> "APTO (Fluctuación Media)"
+        else -> "BAJO (Poca Actividad)"
+    }
+    val scalpColor = when {
+        absChange >= 1.4 -> EmeraldGreen
+        absChange >= 0.6 -> ElectricBlue
+        else -> GrayText
+    }
+
+    // 2. Corto Plazo (Days/weeks)
+    val shortTermLevel = when {
+        rsi in 32.0..68.0 -> "FAVORABLE (Rango Dinámico)"
+        rsi < 32.0 -> "ACUMULACIÓN (Soporte Técnico)"
+        else -> "SOBRECOMPRA (Alto Riesgo)"
+    }
+    val shortTermColor = when {
+        rsi in 32.0..68.0 -> EmeraldGreen
+        rsi < 32.0 -> AmberGold
+        else -> CoralRed
+    }
+
+    // 3. Medio Plazo (Months)
+    val mediumTermLevel = if (isAboveAverage) "TENDENCIA SANAL (Alcista)" else "TENDENCIA BAJISTA (Precaución)"
+    val mediumTermColor = if (isAboveAverage) EmeraldGreen else CoralRed
+
+    // 4. Largo Plazo (Years)
+    val longTermLevel = when {
+        absChange < 1.8 && isAboveAverage -> "SÓLIDO (Crecimiento Sano)"
+        isAboveAverage -> "ALTO CRECIMIENTO"
+        else -> "CONSOLIDANDO SOPORTE"
+    }
+    val longTermColor = if (isAboveAverage) EmeraldGreen else AmberGold
+
+    val horizons = listOf(
+        HorizonData("⚡ Scalping (1-15 min)", scalpLevel, scalpColor, Icons.Default.FlashOn),
+        HorizonData("🎯 Corto Plazo (Días/Semanas)", shortTermLevel, shortTermColor, Icons.Default.SwapVert),
+        HorizonData("📈 Medio Plazo (Meses)", mediumTermLevel, mediumTermColor, Icons.Default.TrendingUp),
+        HorizonData("💎 Largo Plazo (Años)", longTermLevel, longTermColor, Icons.Default.Star)
+    )
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MidnightNavy, RoundedCornerShape(10.dp))
+            .border(1.dp, BorderBlue, RoundedCornerShape(10.dp))
+            .padding(14.dp)
+    ) {
+        Text(
+            text = "Idoneidad por Horizontes Temporales",
+            fontSize = 12.5.sp,
+            fontWeight = FontWeight.Bold,
+            color = LightText,
+            modifier = Modifier.padding(bottom = 12.dp)
+        )
+
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            horizons.forEach { horizon ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = horizon.icon,
+                            contentDescription = horizon.title,
+                            tint = ElectricBlue,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            text = horizon.title,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = LightText
+                        )
+                    }
+                    
+                    Box(
+                        modifier = Modifier
+                            .background(horizon.color.copy(alpha = 0.15f), RoundedCornerShape(4.dp))
+                            .border(1.dp, horizon.color, RoundedCornerShape(4.dp))
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            text = horizon.status,
+                            fontSize = 9.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = horizon.color
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+data class HorizonData(
+    val title: String,
+    val status: String,
+    val color: Color,
+    val icon: ImageVector
+)
+
+// Simple RSI estimation for 5-day prices
+fun calculateRsi5(prices: List<Double>): Double {
+    if (prices.size < 2) return 50.0
+    var gains = 0.0
+    var losses = 0.0
+    for (i in 1 until prices.size) {
+        val diff = prices[i] - prices[i - 1]
+        if (diff > 0) gains += diff else losses -= diff
+    }
+    if (losses == 0.0) return 100.0
+    val rs = gains / losses
+    return 100.0 - (100.0 / (1.0 + rs))
+}
+
+// --- NEW BACKTESTING SCREEN COMPOSABLE ---
+@Composable
+fun BacktestingScreen(viewModel: StockAgentViewModel) {
+    val result by viewModel.backtestResult.collectAsStateWithLifecycle()
+    val isRunning by viewModel.isBacktestingRunning.collectAsStateWithLifecycle()
+    val error by viewModel.backtestError.collectAsStateWithLifecycle()
+    val aiReview by viewModel.backtestAiReview.collectAsStateWithLifecycle()
+    val isAiRunning by viewModel.isBacktestAiRunning.collectAsStateWithLifecycle()
+    val activeQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
+
+    var tickerInput by remember { mutableStateOf(activeQuery) }
+    var strategySelected by remember { mutableStateOf("SMA_CROSS") }
+    var timeframeSelected by remember { mutableStateOf("3mo") }
+    var initialCapitalInput by remember { mutableStateOf("10000") }
+
+    val scrollState = rememberScrollState()
+    val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
+
+    val strategies = listOf(
+        Triple("SMA_CROSS", "Cruce de Medias (SMA 5 vs 15)", "Compra si SMA corta cruza al alza la de 15, vende en cruce inverso. Timing básico."),
+        Triple("RSI_REV", "Reversión RSI (Sobrec/Sobrevent)", "Estrategia clásica de oscilador. Compra cuando RSI cruza arriba de 30, vende cruzando abajo de 70."),
+        Triple("MOMENTUM_BREAK", "Ruptura de Canal + Volumen", "Compra al superar el máximo de 5 días con volumen incremental clímax (+30% del volumen normal), vende bajo mínimo de 5 días.")
+    )
+
+    val timeframes = listOf(
+        Pair("1mo", "1 Mes"),
+        Pair("3mo", "3 Meses"),
+        Pair("6mo", "6 Meses"),
+        Pair("1y", "1 Año")
+    )
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+            .verticalScroll(scrollState),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = CardSlate),
+            border = BorderStroke(1.dp, BorderBlue)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = "Configuración del Backtesting Histórico",
+                    color = LightText,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Bold
+                )
+
+                // Ticker Input
+                OutlinedTextField(
+                    value = tickerInput,
+                    onValueChange = { tickerInput = it.uppercase() },
+                    label = { Text("Ticker del Activo (ej: SAN.MC, AAPL)", color = GrayText) },
+                    colors = TextFieldDefaults.colors(
+                        focusedTextColor = LightText,
+                        unfocusedTextColor = LightText,
+                        focusedContainerColor = MidnightNavy,
+                        unfocusedContainerColor = MidnightNavy,
+                        focusedLabelColor = ElectricBlue,
+                        unfocusedLabelColor = GrayText,
+                        focusedIndicatorColor = ElectricBlue,
+                        unfocusedIndicatorColor = BorderBlue
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+
+                // Strategy selector
+                Text(
+                    text = "Estrategia Técnica de Simulación",
+                    color = LightText,
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    strategies.forEach { strategy ->
+                        val isSelected = strategySelected == strategy.first
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(
+                                    if (isSelected) BorderBlue.copy(alpha = 0.25f) else Color.Transparent,
+                                    RoundedCornerShape(8.dp)
+                                )
+                                .border(
+                                    1.dp,
+                                    if (isSelected) ElectricBlue else BorderBlue,
+                                    RoundedCornerShape(8.dp)
+                                )
+                                .clickable { strategySelected = strategy.first }
+                                .padding(12.dp)
+                        ) {
+                            Column {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    RadioButton(
+                                        selected = isSelected,
+                                        onClick = { strategySelected = strategy.first },
+                                        colors = RadioButtonDefaults.colors(
+                                            selectedColor = ElectricBlue,
+                                            unselectedColor = GrayText
+                                        )
+                                    )
+                                    Text(
+                                        text = strategy.second,
+                                        color = if (isSelected) LightText else GrayText,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                                Text(
+                                    text = strategy.third,
+                                    color = GrayText,
+                                    fontSize = 11.sp,
+                                    modifier = Modifier.padding(start = 36.dp, top = 2.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Timeframe Selector Row
+                Text(
+                    text = "Rango de Datos Históricos (Yahoo Finance Real)",
+                    color = LightText,
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    timeframes.forEach { tf ->
+                        val isSelected = timeframeSelected == tf.first
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .background(
+                                    if (isSelected) ElectricBlue.copy(alpha = 0.15f) else MidnightNavy,
+                                    RoundedCornerShape(6.dp)
+                                )
+                                .border(
+                                    1.dp,
+                                    if (isSelected) ElectricBlue else BorderBlue,
+                                    RoundedCornerShape(6.dp)
+                                )
+                                .clickable { timeframeSelected = tf.first }
+                                .padding(vertical = 10.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = tf.second,
+                                color = if (isSelected) ElectricBlue else LightText,
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+
+                // Initial Capital
+                OutlinedTextField(
+                    value = initialCapitalInput,
+                    onValueChange = { initialCapitalInput = it.filter { char -> char.isDigit() } },
+                    label = { Text("Capital de Entrada Virtual (EUR)", color = GrayText) },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    colors = TextFieldDefaults.colors(
+                        focusedTextColor = LightText,
+                        unfocusedTextColor = LightText,
+                        focusedContainerColor = MidnightNavy,
+                        unfocusedContainerColor = MidnightNavy,
+                        focusedLabelColor = ElectricBlue,
+                        unfocusedLabelColor = GrayText,
+                        focusedIndicatorColor = ElectricBlue,
+                        unfocusedIndicatorColor = BorderBlue
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                // Action button
+                Button(
+                    onClick = {
+                        val cap = initialCapitalInput.toDoubleOrNull() ?: 10000.0
+                        viewModel.executeBacktest(
+                            ticker = tickerInput,
+                            strategyId = strategySelected,
+                            timeframe = timeframeSelected,
+                            initialCapital = cap
+                        )
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .testTag("run_backtest_button"),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = ElectricBlue,
+                        contentColor = MidnightNavy
+                    ),
+                    enabled = !isRunning && tickerInput.isNotBlank(),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    if (isRunning) {
+                        CircularProgressIndicator(
+                            color = MidnightNavy,
+                            modifier = Modifier.size(20.dp),
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.PlayArrow,
+                                contentDescription = "Simular",
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                "Ejecutar Simulación Avanzada",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // Active Loaders
+        if (isRunning) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = CardSlate),
+                border = BorderStroke(1.dp, BorderBlue)
+            ) {
+                Column(
+                    modifier = Modifier.padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    CircularProgressIndicator(color = ElectricBlue)
+                    Text(
+                        text = "Conectando con Yahoo Finance, recuperando datos históricos reales de cierre y ejecutando simulación...",
+                        color = LightText,
+                        fontSize = 12.5.sp,
+                        textAlign = TextAlign.Center,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            }
+        }
+
+        // Error panel
+        error?.let { err ->
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = CoralRed.copy(alpha = 0.15f)),
+                border = BorderStroke(1.dp, CoralRed)
+            ) {
+                Row(
+                    modifier = Modifier.padding(14.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Warning,
+                        contentDescription = "Error",
+                        tint = CoralRed,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Text(
+                        text = err,
+                        color = CoralRed,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+        }
+
+        // RESULTS PANEL!!
+        result?.let { r ->
+            // Quality marker info
+            val isReal = r.isUsingRealData
+            
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = CardSlate),
+                border = BorderStroke(1.dp, if (isReal) EmeraldGreen else AmberGold)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(if (isReal) EmeraldGreen.copy(alpha = 0.08f) else AmberGold.copy(alpha = 0.08f))
+                        .padding(12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = if (isReal) Icons.Default.CheckCircle else Icons.Default.Warning,
+                            contentDescription = "Estado de datos",
+                            tint = if (isReal) EmeraldGreen else AmberGold,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            text = if (isReal) "DATOS HISTÓRICOS REALES (Yahoo Finance)" else "DATOS SIMULADOS DE CONTINGENCIA",
+                            color = if (isReal) EmeraldGreen else AmberGold,
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+
+            // Dial Gauge for Strategy Efficiency (Win Rate!)
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = CardSlate),
+                border = BorderStroke(1.dp, BorderBlue)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "Eficiencia de Estrategia (Win Rate %)",
+                        color = LightText,
+                        fontSize = 12.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.align(Alignment.Start)
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    
+                    BacktestWinRateGauge(winRate = r.winRatePct)
+                }
+            }
+
+            // Stats grid cards
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                val statList = listOf(
+                    QuadStat("Rendimiento Simulado", String.format(java.util.Locale.US, "%.2f", r.totalReturnPct) + "%", if (r.totalReturnPct >= 0) EmeraldGreen else CoralRed, "Enfoque de la estrategia"),
+                    QuadStat("Benchmark Buy & Hold", String.format(java.util.Locale.US, "%.2f", r.buyAndHoldReturnPct) + "%", if (r.buyAndHoldReturnPct >= 0) EmeraldGreen else CoralRed, "Comprar y Mantener"),
+                    QuadStat("Capital de Cierre", String.format(java.util.Locale.US, "%.2f", r.finalCapital) + " €", LightText, "Capital inicial: ${String.format(java.util.Locale.US, "%.2f", r.initialCapital)} €"),
+                    QuadStat("Factor de Ganancia", String.format(java.util.Locale.US, "%.2f", r.profitFactor), if (r.profitFactor >= 1.0) EmeraldGreen else CoralRed, "Rentabilidad vs pérdidas"),
+                    QuadStat("Max Drawdown de Cuenta", String.format(java.util.Locale.US, "%.2f", r.maxDrawdownPct) + "%", if (r.maxDrawdownPct <= 15.0) EmeraldGreen else if (r.maxDrawdownPct <= 25.0) AmberGold else CoralRed, "Mayor caída desde pico"),
+                    QuadStat("Operaciones Ejecutadas", "${r.totalTrades}", ElectricBlue, "Tasa acierto: ${String.format(java.util.Locale.US, "%.1f", r.winRatePct)}%")
+                )
+
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    StatBox(statList[0], modifier = Modifier.weight(1f))
+                    StatBox(statList[1], modifier = Modifier.weight(1f))
+                }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    StatBox(statList[2], modifier = Modifier.weight(1f))
+                    StatBox(statList[3], modifier = Modifier.weight(1f))
+                }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    StatBox(statList[4], modifier = Modifier.weight(1f))
+                    StatBox(statList[5], modifier = Modifier.weight(1f))
+                }
+            }
+
+            // AI Auditor Report Box!
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MidnightNavy),
+                border = BorderStroke(1.dp, BorderBlue)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Psychology,
+                                contentDescription = "AI Review",
+                                tint = ElectricBlue,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Text(
+                                text = "Auditoría Cuantitativa de la IA",
+                                color = LightText,
+                                fontSize = 13.5.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        if (isAiRunning) {
+                            CircularProgressIndicator(color = ElectricBlue, modifier = Modifier.size(16.dp), strokeWidth = 1.5.dp)
+                        } else if (aiReview != null) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                IconButton(
+                                    onClick = {
+                                        clipboardManager.setText(AnnotatedString(aiReview ?: ""))
+                                        Toast.makeText(context, "📋 Auditoría de backtesting copiada", Toast.LENGTH_SHORT).show()
+                                    },
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Icon(imageVector = Icons.Default.ContentCopy, contentDescription = "Copiar", tint = ElectricBlue, modifier = Modifier.size(14.dp))
+                                }
+                                IconButton(
+                                    onClick = {
+                                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                            type = "text/plain"
+                                            putExtra(Intent.EXTRA_SUBJECT, "Auditoría de Backtesting: ${r.ticker}")
+                                            putExtra(Intent.EXTRA_TEXT, aiReview)
+                                        }
+                                        context.startActivity(Intent.createChooser(shareIntent, "Compartir Auditoría..."))
+                                    },
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Icon(imageVector = Icons.Default.Share, contentDescription = "Compartir", tint = ElectricBlue, modifier = Modifier.size(14.dp))
+                                }
+                            }
+                        }
+                    }
+
+                    Divider(color = BorderBlue, modifier = Modifier.padding(vertical = 12.dp))
+
+                    if (isAiRunning) {
+                        Text(
+                            text = "La Mesa de Asesores de Bolsa AI está redactando un informe estratégico completo del backtesting...",
+                            color = GrayText,
+                            fontSize = 11.5.sp,
+                            fontStyle = androidx.compose.ui.text.font.FontStyle.Italic
+                        )
+                    } else {
+                        Text(
+                            text = aiReview ?: "Revisión no disponible.",
+                            color = LightText,
+                            fontSize = 12.sp,
+                            lineHeight = 18.sp
+                        )
+                    }
+                }
+            }
+
+            // Expandable Trades list
+            var tradesVisible by remember { mutableStateOf(false) }
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = CardSlate),
+                border = BorderStroke(1.dp, BorderBlue)
+            ) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { tradesVisible = !tradesVisible },
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.History,
+                                contentDescription = "Historial",
+                                tint = ElectricBlue,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                text = "Registro de Transacciones Históricas (${r.trades.size})",
+                                color = LightText,
+                                fontSize = 12.5.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        Icon(
+                            imageVector = if (tradesVisible) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                            contentDescription = "Expandir",
+                            tint = ElectricBlue
+                        )
+                    }
+
+                    if (tradesVisible) {
+                        Divider(color = BorderBlue, modifier = Modifier.padding(vertical = 10.dp))
+                        
+                        if (r.trades.isEmpty()) {
+                            Text(
+                                "No se realizaron operaciones bajo las condiciones especificadas de esta estrategia y temporalidad.",
+                                fontSize = 11.sp,
+                                color = GrayText,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp)
+                            )
+                        } else {
+                            Column(
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                r.trades.forEachIndexed { index, trade ->
+                                    val isProfit = trade.isProfit
+                                    val badgeBg = if (isProfit) EmeraldGreen.copy(alpha = 0.1f) else CoralRed.copy(alpha = 0.1f)
+                                    val badgeBorder = if (isProfit) EmeraldGreen else CoralRed
+                                    
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .background(MidnightNavy, RoundedCornerShape(6.dp))
+                                            .border(1.dp, BorderBlue, RoundedCornerShape(6.dp))
+                                            .padding(10.dp)
+                                    ) {
+                                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Text(
+                                                    text = "Operación #${index + 1}",
+                                                    fontSize = 11.5.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = LightText
+                                                )
+                                                Box(
+                                                    modifier = Modifier
+                                                        .background(badgeBg, RoundedCornerShape(4.dp))
+                                                        .border(1.dp, badgeBorder, RoundedCornerShape(4.dp))
+                                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                                ) {
+                                                    Text(
+                                                        text = if (trade.progressPct >= 0) "+${String.format(java.util.Locale.US, "%.2f", trade.progressPct)}%" else "${String.format(java.util.Locale.US, "%.2f", trade.progressPct)}%",
+                                                        fontSize = 9.5.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = badgeBorder
+                                                    )
+                                                }
+                                            }
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween
+                                            ) {
+                                                Column {
+                                                    Text("COMPRA: ${trade.dateEntry}", fontSize = 10.sp, color = GrayText)
+                                                    Text("Precio: ${String.format(java.util.Locale.US, "%.2f", trade.priceEntry)} €", fontSize = 10.5.sp, color = LightText, fontWeight = FontWeight.SemiBold)
+                                                }
+                                                Column(horizontalAlignment = Alignment.End) {
+                                                    Text("VENTA: ${trade.dateExit ?: "Fin Periodo"}", fontSize = 10.sp, color = GrayText)
+                                                    Text("Precio: ${String.format(java.util.Locale.US, "%.2f", trade.priceExit ?: 0.0)} €", fontSize = 10.5.sp, color = LightText, fontWeight = FontWeight.SemiBold)
+                                                }
+                                            }
+                                            Text(
+                                                text = "Duración aproximada: ${trade.durationDays} sesiones",
+                                                fontSize = 9.sp,
+                                                color = GrayText
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// --- WIN RATE GAUGE WITH ROTATING NEEDLE ---
+@Composable
+fun BacktestWinRateGauge(winRate: Double, modifier: Modifier = Modifier) {
+    // Leftmost is 0f (0%), center is 90f (50%), rightmost is 180f (100%)
+    val targetAngle = (winRate / 100f) * 180f
+    
+    val animatedAngle by animateFloatAsState(
+        targetValue = targetAngle.toFloat(),
+        animationSpec = spring(
+            dampingRatio = 0.6f,
+            stiffness = Spring.StiffnessLow
+        ),
+        label = "WinRateNeedle"
+    )
+
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = 12.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(height = 120.dp, width = 220.dp),
+            contentAlignment = Alignment.BottomCenter
+        ) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val width = size.width
+                val height = size.height
+                val center = Offset(width / 2f, height - 10f)
+                val radius = width / 2.3f
+                val strokeWidth = 16.dp.toPx()
+
+                // Draw standard gauge arc zones
+                // Draw 0-40% zone: Poor efficiency (Red)
+                drawArc(
+                    color = CoralRed.copy(alpha = 0.2f),
+                    startAngle = 180f,
+                    sweepAngle = 72f,
+                    useCenter = false,
+                    style = Stroke(width = strokeWidth, cap = StrokeCap.Round),
+                    size = Size(radius * 2f, radius * 2f),
+                    topLeft = Offset(center.x - radius, center.y - radius)
+                )
+
+                // Draw 40-65% zone: Normal efficiency (Amber)
+                drawArc(
+                    color = AmberGold.copy(alpha = 0.2f),
+                    startAngle = 252f,
+                    sweepAngle = 45f,
+                    useCenter = false,
+                    style = Stroke(width = strokeWidth),
+                    size = Size(radius * 2f, radius * 2f),
+                    topLeft = Offset(center.x - radius, center.y - radius)
+                )
+
+                // Draw 65-100% zone: Strong efficiency (Green)
+                drawArc(
+                    color = EmeraldGreen.copy(alpha = 0.2f),
+                    startAngle = 297f,
+                    sweepAngle = 63f,
+                    useCenter = false,
+                    style = Stroke(width = strokeWidth, cap = StrokeCap.Round),
+                    size = Size(radius * 2f, radius * 2f),
+                    topLeft = Offset(center.x - radius, center.y - radius)
+                )
+
+                // Highlight active sector based on winRate
+                when {
+                    winRate < 40.0 -> {
+                        drawArc(
+                            color = CoralRed,
+                            startAngle = 180f,
+                            sweepAngle = 72f,
+                            useCenter = false,
+                            style = Stroke(width = strokeWidth + 3.dp.toPx(), cap = StrokeCap.Round),
+                            size = Size(radius * 2f, radius * 2f),
+                            topLeft = Offset(center.x - radius, center.y - radius)
+                        )
+                    }
+                    winRate < 65.0 -> {
+                        drawArc(
+                            color = AmberGold,
+                            startAngle = 252f,
+                            sweepAngle = 45f,
+                            useCenter = false,
+                            style = Stroke(width = strokeWidth + 3.dp.toPx()),
+                            size = Size(radius * 2f, radius * 2f),
+                            topLeft = Offset(center.x - radius, center.y - radius)
+                        )
+                    }
+                    else -> {
+                        drawArc(
+                            color = EmeraldGreen,
+                            startAngle = 297f,
+                            sweepAngle = 63f,
+                            useCenter = false,
+                            style = Stroke(width = strokeWidth + 3.dp.toPx(), cap = StrokeCap.Round),
+                            size = Size(radius * 2f, radius * 2f),
+                            topLeft = Offset(center.x - radius, center.y - radius)
+                        )
+                    }
+                }
+
+                // Make rotating needle
+                val absoluteAngle = 180f + animatedAngle
+                val rad = Math.toRadians(absoluteAngle.toDouble())
+                val needleLen = radius * 0.9f
+                
+                val needleEnd = Offset(
+                    (center.x + needleLen * Math.cos(rad)).toFloat(),
+                    (center.y + needleLen * Math.sin(rad)).toFloat()
+                )
+
+                // Shadow
+                drawLine(
+                    color = Color.Black.copy(alpha = 0.5f),
+                    start = center + Offset(2f, 2f),
+                    end = needleEnd + Offset(2f, 2f),
+                    strokeWidth = 3.5.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+
+                // Electric glow needle
+                drawLine(
+                    color = ElectricBlue,
+                    start = center,
+                    end = needleEnd,
+                    strokeWidth = 2.8.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+
+                // Center cap
+                drawCircle(color = MidnightNavy, radius = 9.dp.toPx(), center = center)
+                drawCircle(color = ElectricBlue, radius = 5.dp.toPx(), center = center)
+            }
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        // Win Rate central label
+        Text(
+            text = "${String.format(java.util.Locale.US, "%.1f", winRate)}%",
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Bold,
+            color = ElectricBlue
+        )
+        Text(
+            text = if (winRate < 40f) "Acierto Bajo (Estrategia Débil)" else if (winRate < 60f) "Acierto Medio (Consolidación)" else "Acierto Fuerte (Estrategia de Precisión)",
+            fontSize = 10.sp,
+            color = GrayText,
+            fontWeight = FontWeight.Medium
+        )
+    }
+}
+
+@Composable
+fun StatBox(data: QuadStat, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .background(MidnightNavy, RoundedCornerShape(8.dp))
+            .border(1.dp, BorderBlue, RoundedCornerShape(8.dp))
+            .padding(12.dp)
+    ) {
+        Column {
+            Text(text = data.title, fontSize = 10.5.sp, color = GrayText, fontWeight = FontWeight.SemiBold)
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(text = data.value, fontSize = 15.sp, color = data.color, fontWeight = FontWeight.Bold)
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(text = data.hint, fontSize = 9.sp, color = GrayText)
+        }
+    }
+}
+
+data class QuadStat(
+    val title: String,
+    val value: String,
+    val color: Color,
+    val hint: String
+)
+

@@ -193,6 +193,97 @@ class StockRepository(
         )
     }
 
+    suspend fun getBacktestHistory(ticker: String, range: String): QuoteDataPoint = withContext(Dispatchers.IO) {
+        val uppercaseTicker = ticker.uppercase(Locale.ROOT).trim()
+        try {
+            Log.d("StockRepository", "Fetching backtest history for: $uppercaseTicker, range: $range")
+            val response = yahooService.getChartData(ticker = uppercaseTicker, range = range, interval = "1d")
+            val result = response.chart.result?.firstOrNull()
+            if (result != null) {
+                val meta = result.meta
+                val price = meta.regularMarketPrice ?: 0.0
+                val prevClose = meta.chartPreviousClose ?: price
+                val volume = meta.regularMarketVolume ?: 0L
+                val changePct = if (prevClose != 0.0) ((price - prevClose) / prevClose) * 100.0 else 0.0
+
+                val indicatorQuote = result.indicators?.quote?.firstOrNull()
+                val closesList = indicatorQuote?.close?.filterNotNull() ?: emptyList()
+                val volumesList = indicatorQuote?.volume?.filterNotNull() ?: emptyList()
+                val timestampsList = result.timestamp ?: emptyList()
+
+                if (closesList.isEmpty()) {
+                    throw Exception("No se encontraron precios de cierre históricos para $uppercaseTicker")
+                }
+
+                QuoteDataPoint(
+                    ticker = uppercaseTicker,
+                    price = price,
+                    previousClose = prevClose,
+                    volume = volume,
+                    changePercent = changePct,
+                    pricesHistory = closesList,
+                    pointsHistory = timestampsList,
+                    volumesHistory = volumesList,
+                    isFallback = false
+                )
+            } else {
+                throw Exception("La respuesta de Yahoo Finance no contiene resultados válidos.")
+            }
+        } catch (e: Exception) {
+            Log.e("StockRepository", "Failed fetching real backtest history for $uppercaseTicker: ${e.message}")
+            val fallbackData = generateHistoricalFallback(uppercaseTicker, range)
+            return@withContext fallbackData
+        }
+    }
+
+    private fun generateHistoricalFallback(ticker: String, range: String): QuoteDataPoint {
+        val uppercaseTicker = ticker.uppercase(Locale.ROOT).trim()
+        val numDays = when (range) {
+            "1mo" -> 22
+            "3mo" -> 65
+            "6mo" -> 130
+            "1y" -> 252
+            else -> 65
+        }
+        val randomFactor = (0.97 + (Math.random() * 0.06))
+        val basePrice = when {
+            uppercaseTicker == "^IBEX" || uppercaseTicker == "IBEX" || uppercaseTicker == "IBEX35" -> 11245.0
+            uppercaseTicker.contains("SAN") -> 4.28
+            uppercaseTicker.contains("TEF") -> 3.92
+            uppercaseTicker.contains("BBVA") -> 9.15
+            uppercaseTicker.contains("AAPL") -> 183.50
+            uppercaseTicker.contains("MSFT") -> 415.20
+            else -> 125.0
+        }
+
+        val pricesList = mutableListOf<Double>()
+        val volumesList = mutableListOf<Long>()
+        val timestampsList = mutableListOf<Long>()
+        
+        var rollingPrice = basePrice * randomFactor
+        val startSec = (System.currentTimeMillis() / 1000) - (numDays * 24 * 3600)
+        
+        for (i in 0 until numDays) {
+            val dayPct = (Math.random() - 0.49) * 0.035
+            rollingPrice *= (1.0 + dayPct)
+            pricesList.add(rollingPrice)
+            volumesList.add((1500000..8500000).random().toLong())
+            timestampsList.add(startSec + (i * 24 * 3600))
+        }
+
+        return QuoteDataPoint(
+            ticker = uppercaseTicker,
+            price = pricesList.last(),
+            previousClose = pricesList.first(),
+            volume = volumesList.last(),
+            changePercent = ((pricesList.last() - pricesList.first()) / pricesList.first()) * 100.0,
+            pricesHistory = pricesList,
+            pointsHistory = timestampsList,
+            volumesHistory = volumesList,
+            isFallback = true
+        )
+    }
+
     /**
      * Iterates through active alerts, fetches the latest quotes, compares against user rules,
      * logs triggered alerts in DB, and generates detailed descriptions with Gemini if enabled and key exists.

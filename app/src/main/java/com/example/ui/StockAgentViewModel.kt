@@ -8,12 +8,14 @@ import android.widget.Toast
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.BuildConfig
 import com.example.data.database.AlertHistory
 import com.example.data.database.AppDatabase
 import com.example.data.database.StockAlert
 import com.example.data.database.IaAnalysisHistory
 import com.example.data.repository.StockRepository
 import com.example.data.network.*
+import com.example.data.backtest.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -115,6 +117,22 @@ class StockAgentViewModel(application: Application) : AndroidViewModel(applicati
 
     private val _refreshTrigger = MutableStateFlow(0)
     val refreshTrigger = _refreshTrigger.asStateFlow()
+
+    // BACKTESTING STATES
+    private val _backtestResult = MutableStateFlow<BacktestResult?>(null)
+    val backtestResult = _backtestResult.asStateFlow()
+
+    private val _isBacktestingRunning = MutableStateFlow(false)
+    val isBacktestingRunning = _isBacktestingRunning.asStateFlow()
+
+    private val _backtestError = MutableStateFlow<String?>(null)
+    val backtestError = _backtestError.asStateFlow()
+
+    private val _backtestAiReview = MutableStateFlow<String?>(null)
+    val backtestAiReview = _backtestAiReview.asStateFlow()
+
+    private val _isBacktestAiRunning = MutableStateFlow(false)
+    val isBacktestAiRunning = _isBacktestAiRunning.asStateFlow()
 
     fun triggerRefresh() {
         _refreshTrigger.value += 1
@@ -845,6 +863,112 @@ class StockAgentViewModel(application: Application) : AndroidViewModel(applicati
     fun deleteIaAnalysisHistoryById(id: Int) {
         viewModelScope.launch(Dispatchers.IO) {
             repository.deleteIaAnalysisHistoryById(id)
+        }
+    }
+
+    fun executeBacktest(ticker: String, strategyId: String, timeframe: String, initialCapital: Double) {
+        _isBacktestingRunning.value = true
+        _backtestError.value = null
+        _backtestResult.value = null
+        _backtestAiReview.value = null
+
+        viewModelScope.launch {
+            try {
+                // Fetch historical quotes from repository
+                val quote = repository.getBacktestHistory(ticker, timeframe)
+                val isReal = !quote.isFallback
+                
+                // Run backtest simulation
+                val result = BacktestEngine.runSimulation(
+                    ticker = quote.ticker,
+                    strategyId = strategyId,
+                    timeframe = timeframe,
+                    initialCapital = initialCapital,
+                    prices = quote.pricesHistory,
+                    timestamps = quote.pointsHistory,
+                    volumes = quote.volumesHistory ?: emptyList(),
+                    isRealData = isReal
+                )
+                
+                _backtestResult.value = result
+                
+                // Triggers Gemini AI consultation of backtest results!
+                runBacktestAiAnalysis(result)
+            } catch (e: Exception) {
+                _backtestError.value = "Error al ejecutar el backtesting: ${e.localizedMessage}"
+            } finally {
+                _isBacktestingRunning.value = false
+            }
+        }
+    }
+
+    private fun runBacktestAiAnalysis(result: BacktestResult) {
+        val apiKey = BuildConfig.GEMINI_API_KEY
+        if (apiKey.isBlank()) {
+            _backtestAiReview.value = "⚠️ No hay API Key para realizar la revisión experta de AI. Revisa los secretos de AI Studio."
+            return
+        }
+
+        _isBacktestAiRunning.value = true
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val systemMsg = """
+                    Eres la "Mesa de Asesores de Bolsa AI". Tu misión es redactar una auditoría cuantitativa y consejo estratégico riguroso en base a los resultados de un backtesting histórico que el usuario acaba de simular.
+                    Debes hablar en español, de forma muy analítica, directa y profesional, sin rodeos comerciales ni saludos exagerados. Utiliza viñetas claras.
+                """.trimIndent()
+
+                val tradeSummary = result.trades.take(12).mapIndexed { idx, trade ->
+                    "Operación #${idx + 1}: Compra el ${trade.dateEntry} a ${String.format(java.util.Locale.US, "%.2f", trade.priceEntry)}, Venta el ${trade.dateExit ?: "Fin"} a ${String.format(java.util.Locale.US, "%.2f", trade.priceExit ?: 0.0)} -> Rendimiento: ${String.format(java.util.Locale.US, "%.2f", trade.progressPct)}%"
+                }.joinToString("\n")
+
+                val userPrompt = """
+                    === RESULTADO DE BACKTESTING DE BOLSA ===
+                    Activo: ${result.ticker}
+                    Estrategia: ${result.strategyName}
+                    Temporalidad: ${result.timeframe} (Simulado sobre datos ${if (result.isUsingRealData) "REALES de Yahoo Finance" else "de contingencia debido a límites"})
+                    Capital Inicial: ${String.format(java.util.Locale.US, "%.2f", result.initialCapital)}
+                    Capital Final: ${String.format(java.util.Locale.US, "%.2f", result.finalCapital)}
+                    Rentabilidad de la Estrategia: ${String.format(java.util.Locale.US, "%.2f", result.totalReturnPct)}%
+                    Rentabilidad Buy & Hold (Comprar y Mantener): ${String.format(java.util.Locale.US, "%.2f", result.buyAndHoldReturnPct)}%
+                    Número total de Operaciones: ${result.totalTrades}
+                    Tasa de Acierto (Win Rate): ${String.format(java.util.Locale.US, "%.2f", result.winRatePct)}%
+                    Factor de Ganancia (Profit Factor): ${String.format(java.util.Locale.US, "%.2f", result.profitFactor)}
+                    Drawdown Máximo de la cuenta: ${String.format(java.util.Locale.US, "%.2f", result.maxDrawdownPct)}%
+
+                    Muestra de operaciones históricas ejecuciones:
+                    $tradeSummary
+
+                    Escribe tu veredicto agrupado exactamente en los siguientes apartados con emojis analíticos:
+                    1. 📊 COMENTARIO DEL AUDITOR: Evalúa si la estrategia superó al mercado (Buy & Hold), el impacto del factor de ganancia y si el número de señales es estadísticamente suficiente.
+                    2. ⚖️ ANÁLISIS DE RIESGO: Analiza si el Drawdown Máximo es aceptable o excesivo para el rendimiento obtenido (Ratio de Calidad del Drawdown).
+                    3. 💡 RECOMENDACIÓN DE REGULACIÓN: Qué filtros adicionales añadirías (e.g. cruce de tendencia macro superior, filtro de RSI o parada de stop loss) para limpiar operaciones falsas.
+                    4. 🏛️ VEREDICTO DE LA MESA: [APROBADO CON RESERVAS / NO RECOMENDADO / EXCELENTE SETUP]
+                """.trimIndent()
+
+                val request = GeminiContentRequest(
+                    contents = listOf(Content(parts = listOf(Part(text = userPrompt)))),
+                    systemInstruction = Content(parts = listOf(Part(text = systemMsg))),
+                    generationConfig = GenerationConfig(temperature = 0.5f)
+                )
+
+                val response = RetrofitClient.generateContentSafe(
+                    model = "gemini-3.5-flash",
+                    apiKey = apiKey,
+                    request = request
+                )
+                val text = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
+                withContext(Dispatchers.Main) {
+                    _backtestAiReview.value = text ?: "Sin respuesta del asesor de IA."
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    _backtestAiReview.value = "Error al recibir la revisión experta de la IA: ${e.localizedMessage}"
+                }
+            } finally {
+                withContext(Dispatchers.Main) {
+                    _isBacktestAiRunning.value = false
+                }
+            }
         }
     }
 
