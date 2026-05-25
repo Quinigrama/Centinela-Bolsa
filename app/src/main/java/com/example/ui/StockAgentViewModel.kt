@@ -905,7 +905,7 @@ class StockAgentViewModel(application: Application) : AndroidViewModel(applicati
     private fun runBacktestAiAnalysis(result: BacktestResult) {
         val apiKey = BuildConfig.GEMINI_API_KEY
         if (apiKey.isBlank()) {
-            _backtestAiReview.value = "⚠️ No hay API Key para realizar la revisión experta de AI. Revisa los secretos de AI Studio."
+            _backtestAiReview.value = generateLocalBacktestAuditHeuristic(result, "API Key no provista en secretos")
             return
         }
 
@@ -958,11 +958,12 @@ class StockAgentViewModel(application: Application) : AndroidViewModel(applicati
                 )
                 val text = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
                 withContext(Dispatchers.Main) {
-                    _backtestAiReview.value = text ?: "Sin respuesta del asesor de IA."
+                    _backtestAiReview.value = text ?: generateLocalBacktestAuditHeuristic(result, "Respuesta vacía del servidor")
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
-                    _backtestAiReview.value = "Error al recibir la revisión experta de la IA: ${e.localizedMessage}"
+                    android.util.Log.e("StockAgentViewModel", "AI backtest audit failed, falling back to local: ${e.message}")
+                    _backtestAiReview.value = generateLocalBacktestAuditHeuristic(result, e.localizedMessage ?: e.message ?: "Error de servidor API")
                 }
             } finally {
                 withContext(Dispatchers.Main) {
@@ -970,6 +971,108 @@ class StockAgentViewModel(application: Application) : AndroidViewModel(applicati
                 }
             }
         }
+    }
+
+    private fun generateLocalBacktestAuditHeuristic(result: BacktestResult, apiError: String? = null): String {
+        val formatFloat = { v: Double -> String.format(java.util.Locale.US, "%.2f", v) }
+        val sb = StringBuilder()
+        
+        sb.append("🤖 **[Mesa de Contingencia de Bolsa AI - Auditoría Local Autónoma]**\n")
+        if (apiError != null) {
+            sb.append("*Nota: Se activó la auditoría heurística local de bolsa (${apiError.take(45)}...)*\n\n")
+        } else {
+            sb.append("\n")
+        }
+        
+        sb.append("1. 📊 COMENTARIO DEL AUDITOR:\n")
+        val beatMarket = result.totalReturnPct > result.buyAndHoldReturnPct
+        if (beatMarket) {
+            sb.append("- **Desempeño Superior**: ¡Excelente de cara a la alfa! La estrategia construida alcanzó una rentabilidad del **${formatFloat(result.totalReturnPct)}%**, batiendo firmemente la rentabilidad de referencia de comprar y mantener (*Buy & Hold*) de **${formatFloat(result.buyAndHoldReturnPct)}%**.\n")
+        } else {
+            sb.append("- **Desempeño Rezagado**: La estrategia obtuvo un rendimiento acumulado del **${formatFloat(result.totalReturnPct)}%**, quedando por detrás del de comprar y mantener (*Buy & Hold*) que registró un **${formatFloat(result.buyAndHoldReturnPct)}%**.\n")
+        }
+        
+        sb.append("- **Métrica de Eficiencia**: El factor de ganancia (*Profit Factor*) definitivo se sitúa en **${formatFloat(result.profitFactor)}**. ")
+        when {
+            result.profitFactor >= 2.0 -> sb.append("Este nivel es excepcionalmente alto, sugiriendo que la relación riesgo/beneficio es óptima y altamente sostenible.\n")
+            result.profitFactor >= 1.4 -> sb.append("Indica una robustez aceptable. Las operaciones ganadoras superan a las perdedoras de forma sana.\n")
+            result.profitFactor >= 1.0 -> sb.append("Representa una ventaja estadística marginal. La estrategia tiene rentabilidad positiva pero es propensa a costes de transacción y deslizamientos.\n")
+            else -> sb.append("Al ser inferior a 1.0, el sistema destruye capital. Se trata de un set con esperanza matemática negativa.\n")
+        }
+        
+        sb.append("- **Frecuencia Operativa**: Con un total de **${result.totalTrades}** operaciones registradas en el periodo, ")
+        when {
+            result.totalTrades > 50 -> sb.append("la muestra estadística es sumamente alta y de gran fiabilidad estadística. El sobrecalentamiento del trader puede ser un factor a vigilar para evitar comisiones excesivas.\n")
+            result.totalTrades >= 10 -> sb.append("la muestra es adecuada y representativa para consolidar hipótesis de trading estables.\n")
+            result.totalTrades > 0 -> sb.append("la muestra es demasiado escasa para deducir patrones fiables. Menos de 10 operaciones suele ser vulnerable al sesgo de suerte temporal.\n")
+            else -> sb.append("no se abrieron operaciones. Las condiciones de entrada son excesivamente restrictivas o no coinciden con la pauta de precios actual.\n")
+        }
+        
+        sb.append("\n2. ⚖️ ANÁLISIS DE RIESGO:\n")
+        sb.append("- **Pico de Sufrimiento**: El Drawdown Máximo histórico acumulado durante la simulación fue del **${formatFloat(result.maxDrawdownPct)}%**.\n")
+        when {
+            result.maxDrawdownPct >= 25.0 -> {
+                sb.append("- **Nivel de Alerta: 🔴 CRÍTICO**. Un drawdown superior al 25% pone en riesgo extremo la psicología del operador de bolsa y la integridad de la cuenta. Se requiere una revisión urgente de los límites de riesgo por operación.\n")
+            }
+            result.maxDrawdownPct >= 12.0 -> {
+                sb.append("- **Nivel de Alerta: 🟡 MODERADO**. El drawdown del **${formatFloat(result.maxDrawdownPct)}%** es tolerable para carteras de renta variable activa, pero exige un apalancamiento nulo y un control férreo de la correlación de activos.\n")
+            }
+            result.maxDrawdownPct > 0.0 -> {
+                sb.append("- **Nivel de Alerta: 🟢 CONSERVADOR**. Excelente control de la flotación negativa. Un drawdown de **${formatFloat(result.maxDrawdownPct)}%** demuestra una gestión defensiva impecable y un timing preciso.\n")
+            }
+            else -> {
+                sb.append("- **Nivel de Alerta: ⚪ NULO**. Sin drawdown visible (sin operaciones perdedoras o sin operaciones iniciadas).\n")
+            }
+        }
+        
+        val ratioCalidad = if (result.maxDrawdownPct > 0.0) result.totalReturnPct / result.maxDrawdownPct else 0.0
+        sb.append("- **Ratio de Calidad del Drawdown**: El indicador de rendimiento ajustado (Rendimiento / Drawdown) es **${formatFloat(ratioCalidad)}**. ")
+        if (ratioCalidad >= 2.0) {
+            sb.append("Un ratio superior a 2.0 es sobresaliente, indicando que cada punto porcentual de riesgo asumido devolvió más del doble de beneficio.\n")
+        } else if (ratioCalidad >= 1.0) {
+            sb.append("Un ratio de retorno a riesgo entre 1.0 y 2.0 es aceptable y comúnmente defendido por asesores profesionales.\n")
+        } else {
+            sb.append("Un ratio menor a 1.0 advierte de que la recompensa potencial es asimétrica a la baja con respecto al estrés de drawdown histórico soportado.\n")
+        }
+        
+        sb.append("\n3. 💡 RECOMENDACIÓN DE REGULACIÓN:\n")
+        sb.append("Para optimizar la estrategia de acuerdo con el perfil del trader seleccionado, la Mesa de Asesores sugiere las siguientes adiciones reguladoras:\n")
+        
+        val strategyName = result.strategyName.lowercase()
+        when {
+            strategyName.contains("iturralde") -> {
+                sb.append("- 🕵️ **Filtro de Rupturas (Alberto Iturralde)**: Sugerimos restringir las entradas únicamente si el volumen de la sesión del 'barrido de stops' excede el 150% del volumen medio de las últimas 10 sesiones. Además, limitar las compras si el activo cotiza por debajo de su precio de apertura semanal, reforzando la hipótesis de reversión explosiva rápida.\n")
+            }
+            strategyName.contains("cava") || strategyName.contains("confluencia") -> {
+                sb.append("- 📈 **Alineación de Tendencia Semanal (José Luis Cava)**: Añadir un filtro de confluencia macro de tendencia utilizando una Media Móvil Exponencial (EMA) de 200 periodos en gráfico diario. Únicamente se permiten largos de Cava si el precio cotiza rígidamente por encima de dicha media.\n")
+            }
+            strategyName.contains("sáez") || strategyName.contains("elliott") || strategyName.contains("saez") -> {
+                sb.append("- 🌊 **Confirmación del Impulso de Onda (Sáez de Castillo)**: Sugerimos incorporar un indicador de ciclo rápido como el Oscilador Estocástico para asegurar que el giro correctivo de Elliott ocurre de verdad en zona de extrema sobreventa (K < 20), evitando entrar antes de tiempo.\n")
+            }
+            strategyName.contains("ortega") || strategyName.contains("medio plazo") -> {
+                sb.append("- ⏳ **Timing de Entrada Ajustado (Alexis Ortega)**: Ortega prefiere timing macro institucional. Se recomienda aplicar un filtro que exija que la media móvil exponencial tenga una pendiente positiva verificable en las últimas 3 velas consecutivas antes de validar la señal de compra, eliminando giros planos laterales.\n")
+            }
+            strategyName.contains("gil") || strategyName.contains("fibonacci") -> {
+                sb.append("- 🎯 **Gestión Dinámica de Fibonacci (Pablo Gil)**: Mantener el ratio fijo 1:2 pero aplicando un stop-loss dinámico (*trailing stop*) una vez que el activo complete un avance del 61.8% del recorrido objetivo hacia el take-profit. Esto protege los beneficios acumulados contra giros rápidos de mercado.\n")
+            }
+            strategyName.contains("lasvignes") || strategyName.contains("compra a cero") -> {
+                sb.append("- 🛡️ **Ratio Ajustado de Volatilidad (Carlos Lasvignes)**: Como la estrategia posee objetivos muy veloces (TP de +3.0% y SL de -1.5%), sugerimos indexar el Stop Loss al indicador ATR (Average True Range). Si la volatilidad media es superior al 2.0% diario, ampliar el stop a -2.0% y el take profit a +4.0% para evitar el ruido intradía.\n")
+            }
+            else -> {
+                sb.append("- 🤖 **Unificación del Comité Mesa AI**: Sugerimos emplear un filtro doble combinando el RSI (14) como oscilador de control junto con una media ponderada por volumen. Esto reduce un 40% de las señales de entrada de sierra en mercados fuertemente laterales.\n")
+            }
+        }
+        
+        sb.append("\n4. 🏛️ VEREDICTO DE LA MESA:\n")
+        val verdict = when {
+            result.totalReturnPct > 8.0 && result.winRatePct >= 50.0 && result.maxDrawdownPct < 15.0 -> "**[EXCELENTE SETUP DE BOLSA]** ✅"
+            result.totalReturnPct > 0.0 && result.profitFactor >= 1.0 && result.maxDrawdownPct < 25.0 -> "**[APROBADO CON RESERVAS]** ⚠️"
+            else -> "**[NO RECOMENDADO / REPROBADO PARA TRADING REAL]** ❌"
+        }
+        sb.append("Veredicto final: $verdict\n\n")
+        sb.append("- *Análisis elaborado de forma autónoma con los parámetros de ${result.ticker} e indicadores del motor matemático integrado en el terminal móvil.*")
+        
+        return sb.toString()
     }
 
     fun activateTradersSentinel(

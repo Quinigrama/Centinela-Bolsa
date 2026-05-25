@@ -2224,7 +2224,6 @@ fun TechnicalAssistantScreen(viewModel: StockAgentViewModel) {
                         Spacer(modifier = Modifier.height(2.dp))
                         val providerLabel = when (selectedAiProvider) {
                             "DEEPSEEK" -> "DeepSeek-R1 (Pensamiento Analítico)"
-                            "KIMI" -> "Kimi Chat (Tendencia Rápida)"
                             else -> "Gemini 2.5 Flash (Google - Por Defecto)"
                         }
                         Text(
@@ -2262,14 +2261,6 @@ fun TechnicalAssistantScreen(viewModel: StockAgentViewModel) {
                                 menuExpanded = false
                             },
                             leadingIcon = { Icon(Icons.Default.Info, contentDescription = null, tint = EmeraldGreen, modifier = Modifier.size(18.dp)) }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Kimi Chat (Moonshot)", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 13.sp) },
-                            onClick = {
-                                viewModel.setSelectedAiProvider("KIMI")
-                                menuExpanded = false
-                            },
-                            leadingIcon = { Icon(Icons.Default.TrendingUp, contentDescription = null, tint = AmberGold, modifier = Modifier.size(18.dp)) }
                         )
                         Divider(color = BorderBlue.copy(alpha = 0.4f))
                         DropdownMenuItem(
@@ -3724,7 +3715,7 @@ fun BacktestingScreen(viewModel: StockAgentViewModel) {
     val activeQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
 
     var tickerInput by remember { mutableStateOf(activeQuery) }
-    var strategySelected by remember { mutableStateOf("SMA_CROSS") }
+    var strategySelected by remember { mutableStateOf("MASTER_PROMPT") }
     var timeframeSelected by remember { mutableStateOf("3mo") }
     var initialCapitalInput by remember { mutableStateOf("10000") }
 
@@ -3733,9 +3724,13 @@ fun BacktestingScreen(viewModel: StockAgentViewModel) {
     val clipboardManager = LocalClipboardManager.current
 
     val strategies = listOf(
-        Triple("SMA_CROSS", "Cruce de Medias (SMA 5 vs 15)", "Compra si SMA corta cruza al alza la de 15, vende en cruce inverso. Timing básico."),
-        Triple("RSI_REV", "Reversión RSI (Sobrec/Sobrevent)", "Estrategia clásica de oscilador. Compra cuando RSI cruza arriba de 30, vende cruzando abajo de 70."),
-        Triple("MOMENTUM_BREAK", "Ruptura de Canal + Volumen", "Compra al superar el máximo de 5 días con volumen incremental clímax (+30% del volumen normal), vende bajo mínimo de 5 días.")
+        Triple("MASTER_PROMPT", "Consenso Mesa AI (Comité Integrado 🤖)", "Señales inteligentes unificadas bajo filtros macroestructurales, momentum, pullback y gestión dinámica del capital."),
+        Triple("CAVA", "José Luis Cava (Súper Confluencia 📈)", "Requiere alineación estricta de filtros: cruce alcista de MACD, tendencia potente (ADX) y volumen clímax."),
+        Triple("ITURRALDE", "Alberto Iturralde (DAX Falsas Rupturas 🕵️)", "Busca trampas de mercado bajistas en soportes clave y barrido de stops para incorporarse con velocidad."),
+        Triple("SAEZ", "Antonio Sáez del Castillo (Ondas de Elliott 🌊)", "Detecta la culminación de ondas correctivas bajistas de Gesmovasa para subirse al impulso ascendente."),
+        Triple("ORTEGA", "Alexis Ortega (Timing y Media Semanal ⏳)", "Seguimiento institucional de tendencia a medio plazo analizando el cruce y soporte de una Media Móvil Exponencial (EMA)."),
+        Triple("GIL", "Pablo Gil (Retroceso Fibonacci y Rígido 1:2 🎯)", "Compra rebotes en zonas Fibonacci áureas de retroceso (38.2%/61.8%) y gestiona con un ratio riesgo/recompensa fijo de 1:2."),
+        Triple("LASVIGNES", "Carlos Lasvignes (Compra a Cero & TP/SL Inviolable 🛡️)", "Acceso en ruptura de rango, stop loss inmediato ultracercano al -1.5% y objetivo parcial de beneficio rápido del +3.0%.")
     )
 
     val timeframes = listOf(

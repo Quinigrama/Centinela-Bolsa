@@ -125,12 +125,13 @@ object RetrofitClient {
         modelsToTry.add(model)
         
         val defaultModels = listOf(
-            "gemini-2.5-flash",
+            "gemini-2.0-flash",
             "gemini-1.5-flash",
             "gemini-1.5-flash-8b",
+            "gemini-2.0-flash-exp",
+            "gemini-2.5-flash",
             "gemini-2.5-pro",
             "gemini-1.5-pro",
-            "gemini-2.0-flash-exp",
             "gemini-flash-latest",
             "gemini-2.5-flash-latest"
         )
@@ -147,6 +148,11 @@ object RetrofitClient {
                     android.util.Log.w("RetrofitClient", "Attempting fallback to Gemini model: $candidate")
                 }
                 return geminiService.generateContent(candidate, apiKey, request)
+            } catch (e: retrofit2.HttpException) {
+                val errorBody = e.response()?.errorBody()?.string()
+                val detailedMsg = "HttpException ${e.code()} (${e.message()}): $errorBody"
+                android.util.Log.e("RetrofitClient", "Gemini call HTTP error with model $candidate: $detailedMsg")
+                lastException = Exception(detailedMsg, e)
             } catch (e: Exception) {
                 android.util.Log.e("RetrofitClient", "Gemini call failed with model $candidate: ${e.message}")
                 lastException = e

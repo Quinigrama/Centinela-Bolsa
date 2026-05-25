@@ -1,5 +1,5 @@
 {
-  "name": "Stock Agent",
+  "name": "Centinela",
   "description": "Un agente inteligente de bolsa que monitoriza cotizaciones en tiempo real, analiza tendencias con inteligencia artificial y genera notificaciones de alerta personalizadas por correo.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
